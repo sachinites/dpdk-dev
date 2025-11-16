@@ -1,0 +1,27 @@
+Build the program :
+======================
+meson setup build
+ninja -C build
+
+==========================================
+Now check the PCI address of the interfaces : 
+on DPDK VM , run below command :
+
+vm@vm:~/dpdk/usertools$ dpdk-devbind.py --status
+
+Network devices using kernel driver
+===================================
+0000:00:03.0 'Virtio network device 1000' if=ens3 drv=virtio-pci unused=vfio-pci *Active*
+0000:00:04.0 'Virtio network device 1000' if=ens4 drv=virtio-pci unused=vfio-pci 
+0000:00:05.0 'Virtio network device 1000' if=ens5 drv=virtio-pci unused=vfio-pci 
+0000:00:06.0 'Virtio network device 1000' if=ens6 drv=virtio-pci unused=vfio-pci 
+0000:00:07.0 'Virtio network device 1000' if=ens7 drv=virtio-pci unused=vfio-pci 
+0000:00:08.0 'Virtio network device 1000' if=ens8 drv=virtio-pci unused=vfio-pci 
+0000:00:09.0 'Virtio network device 1000' if=ens9 drv=virtio-pci unused=vfio-pci 
+0000:00:0a.0 'Virtio network device 1000' if=ens10 drv=virtio-pci unused=vfio-pci 
+
+=========================================
+
+Run the program by providing the PCI address as arguments of ens4 and ens5: 
+vm@vm:~/pkt_sniffer$ sudo ./build/pkt_sniffer -l 0-1 -n 2 -a 0000:00:04.0 -a 0000:00:05.0
+
