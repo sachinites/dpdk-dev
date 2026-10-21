@@ -1,0 +1,941 @@
+#include <stddef.h>
+#include <stdint.h>
+#include <ncurses.h>
+#include <stdlib.h>
+#include <memory.h>
+#include <assert.h>
+#include "CmdTree.h"
+#include "CmdTreeCursor.h"
+#include "../string_util.h"
+#include "cmdcodes_def.h"
+#include "clistd.h"
+#include "../cmdtlv.h"
+
+extern int
+ut_test_handler (int64_t cmdcode,
+                            Stack_t *tlv_stack,
+                            op_mode enable_or_disable) ;
+
+/*Default zero level commands hooks. */
+static param_t root;
+static param_t show;
+static param_t debug;
+static param_t config;
+static param_t clearp;
+static param_t run;
+
+/* Working with Filters */
+static param_t pipe;
+static param_t count;
+static param_t save;
+static param_t save_file;
+static param_t include;
+static param_t include_leaf;
+static param_t xinclude;
+static param_t xinclude_leaf;
+static param_t exclude;
+static param_t exclude_leaf;
+static param_t grepx;
+static param_t grepx_leaf;
+static param_t refreshx;
+static param_t refresh_val;
+static param_t clrscr;
+
+
+static param_t *universal_params[] = {&show, &config};
+
+static bool
+param_option_list_contains (param_t *parent, param_t *child)
+{
+    param_option_t *opt;
+
+    FOR_EACH_PARAM_OPTION (parent, opt) {
+        if (opt->param == child) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void
+param_option_list_append (param_t *parent, param_t *child)
+{
+    param_option_t *opt;
+    param_option_t *node;
+
+    if (!parent || !child) {
+        return;
+    }
+
+    if (param_option_list_contains (parent, child)) {
+        return;
+    }
+
+    node = (param_option_t *)calloc (1, sizeof (*node));
+    assert (node);
+    node->param = child;
+    node->next = NULL;
+
+    if (!parent->options) {
+        parent->options = node;
+        return;
+    }
+
+    opt = parent->options;
+    while (opt->next) {
+        opt = opt->next;
+    }
+    opt->next = node;
+}
+
+static void
+param_option_list_remove (param_t *parent, param_t *child)
+{
+    param_option_t *opt;
+    param_option_t *prev = NULL;
+
+    if (!parent) {
+        return;
+    }
+
+    for (opt = parent->options; opt; prev = opt, opt = opt->next) {
+        if (opt->param != child) {
+            continue;
+        }
+        if (prev) {
+            prev->next = opt->next;
+        } else {
+            parent->options = opt->next;
+        }
+        free (opt);
+        return;
+    }
+}
+
+void 
+libcli_register_param(param_t *parent, param_t *child);
+
+void 
+libcli_set_param_cmd_code(param_t *param, int64_t cmd_code) ;
+
+void 
+libcli_register_cmd_handler(param_t *param,  cmd_callback callback) ;
+
+void
+libcli_support_cmd_negation (param_t *param);
+
+void 
+libcli_set_tail_config_one_shot (param_t *param);
+
+void
+init_param(param_t *param,    
+           param_type_t param_type,    
+           const char *cmd_name,    
+           cmd_callback callback,
+           user_validation_callback user_validation_cb_fn,
+           leaf_type_t leaf_type,
+           const char *leaf_id,
+           const char *help) {
+
+    int i = 0;
+
+    /* Already initialized*/
+    if (param->param_type != CMD_UNINITIALISED) return;
+
+    if (param_type == CMD)
+    {   
+        GET_PARAM_CMD(param) = (cmd_t *)calloc(1, sizeof(cmd_t));
+        strncpy((char *)GET_CMD_NAME(param), cmd_name, MIN(CMD_NAME_SIZE, strlen(cmd_name)));
+        GET_CMD_NAME(param)[CMD_NAME_SIZE - 1] = '\0';
+        GET_PARAM_CMD(param)->len = strlen (GET_CMD_NAME(param));
+    }
+    else if (param_type == LEAF)
+    {
+        GET_PARAM_LEAF(param) = (leaf_t *)calloc(1, sizeof(leaf_t));
+        GET_PARAM_LEAF(param)->leaf_type = leaf_type;
+        param->cmd_type.leaf->user_validation_cb_fn = user_validation_cb_fn;
+        strncpy((char *)GET_LEAF_ID(param), leaf_id, MIN(LEAF_ID_SIZE, strlen(leaf_id)));
+        GET_LEAF_ID(param)[LEAF_ID_SIZE - 1] = '\0';
+    }
+    else if (param_type == NO_CMD)
+    {   
+        GET_PARAM_CMD(param) = (cmd_t *)calloc(1, sizeof(cmd_t));
+        strncpy((char *)GET_CMD_NAME(param), NEGATE_CHARACTER, strlen(NEGATE_CHARACTER));
+        GET_CMD_NAME(param)[CMD_NAME_SIZE - 1] = '\0';
+        GET_PARAM_CMD(param)->len = strlen (GET_CMD_NAME(param));
+    }
+
+    param->param_type = param_type;
+    param->callback[0] = callback;
+    for (i = 1; i < CALLBACKS_N; i++)  param->callback[i] = NULL;
+    
+    strncpy(GET_PARAM_HELP_STRING(param), help, MIN(PARAM_HELP_STRING_SIZE, strlen(help)));
+    GET_PARAM_HELP_STRING(param)[PARAM_HELP_STRING_SIZE - 1] = '\0';
+    param->disp_callback = NULL;
+
+    param->options = NULL;
+
+    param->CMDCODE = -1;
+    init_glthread (&param->glue);
+}
+
+/* This fn need to be idempotent in order to support multi-mounting 
+    of CLI subtrees*/
+void 
+libcli_register_param(param_t *parent, param_t *child) {
+
+    if (!parent) parent = libcli_get_root_hook();
+
+    /* You cannot add a LEAF param as child of Recursive param because Recursive
+        param itself is its own child, Wierd but true*/
+    if ( (parent != child) && 
+            parent->flags & PARAM_F_RECURSIVE) {
+        assert (!IS_PARAM_LEAF (child));
+    }
+
+    if (param_option_list_contains (parent, child)) {
+        return;
+    }
+
+    param_option_list_append (parent, child);
+    child->parent = parent;
+}
+
+void 
+libcli_set_param_cmd_code(param_t *param, int64_t cmd_code) {
+
+    if (!param->callback[0]) assert(0);
+    param->CMDCODE = cmd_code;
+}
+
+void 
+libcli_register_cmd_handler(param_t *param,  cmd_callback callback) {
+
+    int i;
+
+    for (i = 0; i < CALLBACKS_N; i++) {
+            if (param->callback[i]) continue;
+            param->callback[i] = callback;
+            return;
+    }
+    /* Cant register more backend handlers. If required, pls increase CALLBACKS_N limit */
+    assert(0);
+}
+
+void 
+libcli_param_recursive (param_t *param) {
+
+    if (param->flags & PARAM_F_RECURSIVE) return;
+    assert (IS_PARAM_LEAF (param));
+    param_t *parent = param->parent;
+    libcli_register_param (param, param);
+    param->parent = parent;
+    param->flags |= PARAM_F_RECURSIVE;
+}
+
+void 
+libcli_set_inbuilt_param (param_t *param) {
+    param->flags |= PARAM_F_INBUILD_CMD;
+}
+
+void 
+libcli_param_synchronous (param_t *param) {
+
+    param->flags |= PARAM_F_SYNCHRONOUS;
+}
+
+void 
+libcli_disable_batch_processing (param_t *param) {
+
+    param->flags |= PARAM_F_NO_BATCH_PROCESSING;
+}
+
+
+void 
+libcli_block_pos_command (param_t *param) {
+
+    param->flags |= PARAM_F_POS_CMD_BLOCK;
+}
+
+void 
+libcli_block_negate_command (param_t *param) {
+
+    param->flags |= PARAM_F_NEG_CMD_BLOCK;
+}
+
+void 
+libcli_set_user_flag(param_t *param, uint8_t flag) {
+
+    assert (flag == 1 || flag == 2 || flag == 3);
+
+    switch (flag) {
+        case 1:
+            param->flags |= PARAM_F_USER_FLAG1;
+            return;
+        case 2:
+            param->flags |= PARAM_F_USER_FLAG2;
+            return;
+        case 3:
+            param->flags |= (PARAM_F_USER_FLAG1 | PARAM_F_USER_FLAG2);
+            return;
+    }
+}
+
+/* Flag is either 1 or 2 or 3*/
+bool 
+libcli_is_user_flag_set(param_t *param, uint8_t flag) {
+
+    assert(flag == 1 || flag == 2 || flag == 3);
+
+    switch (flag)
+    {
+        case 1:
+            return param->flags & PARAM_F_USER_FLAG1;
+        case 2:
+            return param->flags & PARAM_F_USER_FLAG2;
+        case 3:
+            return ((param->flags & PARAM_F_USER_FLAG1) &&
+                    (param->flags & PARAM_F_USER_FLAG2));
+    }
+    return false;
+}
+
+uint8_t
+libcli_get_user_flag(param_t *param) {
+
+    uint8_t flag = 0;
+    if (param->flags & PARAM_F_USER_FLAG1) flag |= 1;
+    if (param->flags & PARAM_F_USER_FLAG2) flag |= 2;
+    return flag;
+}
+
+static void 
+ libcli_build_default_cmdtree() {
+
+    param_t *root_hook = libcli_get_root_hook();
+    init_param(root_hook, CMD, "ROOT", 0, 0, INVALID, 0, "ROOT");
+
+    param_t *chook = libcli_get_show_hook();
+    init_param(chook, CMD, "show", 0, 0, INVALID, 0, "show cmds");
+    libcli_register_param (root_hook, chook);
+
+    chook = libcli_get_config_hook();
+    init_param(chook, CMD, "config", NULL, 0, INVALID, 0, "config cmds");
+    libcli_register_param (root_hook, chook);
+   
+    chook = libcli_get_debug_hook();
+    init_param(chook, CMD, "debug", 0, 0, INVALID, 0, "debug cmds");
+    libcli_register_param (root_hook, chook);
+
+    chook = libcli_get_clear_hook();
+    init_param(chook, CMD, "clear", 0, 0, INVALID, 0, "clear cmds");
+    libcli_register_param (root_hook, chook);
+
+    chook = libcli_get_run_hook();
+    init_param(chook, CMD, "run", 0, 0, INVALID, 0, "run cmds");
+    libcli_register_param (root_hook, chook);
+
+    param_t *hook = libcli_get_config_hook();
+
+    {
+         /* config host-name <name>*/
+         /* config host-name ...*/
+        static param_t hostname;
+        init_param (&hostname, CMD, "host-name", NULL, NULL, INVALID, NULL, "host-name");
+        libcli_register_param (hook, &hostname);
+        {
+            /* config host-name <name> */
+            static param_t name;
+            init_param(&name, LEAF, NULL, clistd_config_device_default_handler, NULL, STRING, "host-name", "Host Name");
+            libcli_register_param(&hostname, &name);
+            libcli_set_param_cmd_code(&name, CONFIG_DEVICE_HOSTNAME);
+        }
+    }
+
+    hook = libcli_get_show_hook();
+
+    {
+        /*show help*/
+        static param_t help;
+        init_param (&help, CMD, "help", show_help_handler, NULL, INVALID, NULL, "KYC (Know Your CLI)");
+        libcli_register_param(hook, &help);
+        libcli_set_param_cmd_code(&help, SHOW_CLI_HELP);
+        libcli_set_inbuilt_param  (&help);
+    }
+    {
+        /*show history*/
+        static param_t history;
+        init_param (&history, CMD, "history", show_history_handler, NULL, INVALID, NULL, "CLI history");
+        libcli_register_param(hook, &history);
+        libcli_set_param_cmd_code(&history, SHOW_CLI_HISTORY);        
+        libcli_set_inbuilt_param  (&history);
+    }
+
+    hook = libcli_get_run_hook();
+
+    {   
+        /* run ut <file path> <tc no> */
+        static param_t ut; 
+        init_param(&ut, CMD, "ut", 0, 0, INVALID, 0, "Unit Test");
+        libcli_register_param(hook, &ut);
+        {   
+            static param_t ut_file_path;
+            init_param(&ut_file_path, LEAF, 0, 0, 0, STRING, "ut-file-name", "UT file name");
+            libcli_register_param(&ut, &ut_file_path);
+            {   
+                static param_t tc_no;
+                init_param(&tc_no, LEAF, 0, ut_test_handler, 0, INT, "tc-no", "Test Case Number");
+                libcli_register_param(&ut_file_path, &tc_no);
+                libcli_set_param_cmd_code(&tc_no, CMDCODE_RUN_UT_TC);
+                libcli_set_inbuilt_param(&tc_no);
+            }   
+        }   
+    }
+
+    {
+        /* run terminate*/
+        static param_t terminate;
+        init_param(&terminate, CMD, "term", cli_terminate_handler, 0, INVALID, 0, "Terminate appln");
+        libcli_register_param(&run, &terminate);
+        libcli_set_inbuilt_param(&terminate);
+    }
+
+    hook = libcli_get_debug_hook();
+
+    {
+        static param_t ut;
+        init_param(&ut, CMD, "ut", 0, 0, INVALID, 0, "debug ut");
+        libcli_register_param(&debug, &ut);
+        {
+            static param_t enable;
+            init_param(&enable, LEAF, 0, ut_test_handler, NULL,  STRING, "ut-enable", "enable | disable");
+            libcli_register_param(&ut, &enable);
+            libcli_set_param_cmd_code(&enable, CMDCODE_DEBUG_UT);
+            libcli_set_inbuilt_param(&enable);
+        }
+    }
+ }
+
+
+/* Function to be used to get access to above hooks*/
+
+param_t *
+libcli_get_root_hook(void)
+{
+    return &root;
+}
+
+param_t *
+libcli_get_show_hook(void)
+{
+    return &show;
+}
+
+param_t *
+libcli_get_debug_hook(void)
+{
+    return &debug;
+}
+
+param_t *
+libcli_get_config_hook(void)
+{
+    return &config;
+}
+
+param_t *
+libcli_get_clear_hook(void)
+{
+    return &clearp;
+}
+
+param_t *
+libcli_get_run_hook(void)
+{
+    return &run;
+}
+
+param_t *
+libcli_get_refresh_hook(void)
+{
+    return &refreshx;
+}
+
+param_t *
+libcli_get_refresh_val_hook(void)
+{
+    return &refresh_val;
+}
+
+param_t *
+libcli_get_clrscr_hook(void)
+{
+    return &clrscr;
+}
+
+bool
+cmd_tree_leaf_char_save (unsigned char *curr_leaf_value, unsigned char c, int index) {
+
+    if (index == LEAF_VALUE_HOLDER_SIZE) return false;
+    curr_leaf_value[index] = c;
+    return true;
+}
+
+tlv_struct_t *
+cmd_tree_convert_param_to_tlv (param_t *param, unsigned char *curr_leaf_value) {
+
+     tlv_struct_t *tlv = (tlv_struct_t *)calloc (1, sizeof (tlv_struct_t));
+
+    if (IS_PARAM_CMD (param)) {
+        
+        tlv->tlv_type = TLV_TYPE_CMD_NAME;
+        tlv->leaf_type = STRING;
+        put_value_in_tlv((tlv), GET_CMD_NAME(param));
+    }
+    else if (IS_PARAM_NO_CMD (param)) {
+        
+        tlv->tlv_type = TLV_TYPE_NEGATE;
+        tlv->leaf_type = STRING;
+        put_value_in_tlv((tlv), GET_CMD_NAME(param));
+    }
+    else {
+        
+        tlv->tlv_type = TLV_TYPE_NORMAL;
+        prepare_tlv_from_leaf(GET_PARAM_LEAF(param), (tlv));
+        put_value_in_tlv((tlv), (const char *)curr_leaf_value);
+    }
+    return tlv;
+}
+
+static unsigned char temp[ LEAF_ID_SIZE + 2]; // 2 for < > 
+void
+cmd_tree_display_all_complete_commands(
+                param_t *root, unsigned int index) {
+
+        if (!root)
+            return;
+
+        /* tokens[] is sized MAX_CMD_TREE_DEPTH; deeper walk is a cycle or
+         * oversized tree and would OOB in untokenize/tokenize. */
+        if (index >= MAX_CMD_TREE_DEPTH)
+            return;
+
+        if (root->flags & PARAM_F_NO_EXPAND) return;
+        
+        if (IS_PARAM_CMD(root)){
+            untokenize(index);
+            tokenize(GET_CMD_NAME(root), GET_PARAM_CMD(root)->len, index);
+        }
+
+        else if (IS_PARAM_LEAF(root)){
+            untokenize(index);
+            memset(temp, 0, sizeof(temp));
+            sprintf((char *)temp, "<%s>", GET_LEAF_ID(root));
+            tokenize((char *)temp, strlen(GET_LEAF_ID(root)) + 2, index);
+        }   
+
+        param_option_t *opt;
+
+        FOR_EACH_PARAM_OPTION (root, opt) {
+            if (opt->param && (opt->param->flags & PARAM_F_RECURSIVE)) continue;
+            cmd_tree_display_all_complete_commands(
+                    opt->param, index+1);
+        }
+    
+        if (root->callback[0]){
+            print_tokens(index + 1); 
+            printw("\n");
+        }   
+}
+
+void 
+cmd_tree_install_universal_params (param_t *param, param_t *branch_hook) {
+
+    int j = 0;
+    int k = sizeof (universal_params) / sizeof(universal_params[0]);
+
+    while (j < k) {
+
+        if (universal_params[j] == branch_hook) {
+            j++;
+            continue;
+        }
+
+        if (!param_option_list_contains (param, universal_params[j])) {
+            param_option_list_append (param, universal_params[j]);
+            universal_params[j]->flags |= PARAM_F_NO_EXPAND;
+        }
+        j++;
+    }
+}
+
+void 
+cmd_tree_uninstall_universal_params (param_t *param) {
+
+    int j;
+    int k = sizeof (universal_params) / sizeof(universal_params[0]);
+
+    for (j = 0; j < k; j++) {
+        if (!param_option_list_contains (param, universal_params[j])) {
+            continue;
+        }
+        universal_params[j]->flags &= ~PARAM_F_NO_EXPAND;
+        param_option_list_remove (param, universal_params[j]);
+    }
+}
+
+bool 
+param_is_hook (param_t *param) {
+
+    return (    param == libcli_get_config_hook () ||
+         param == libcli_get_clear_hook () ||
+         param == libcli_get_show_hook () ||
+         param == libcli_get_run_hook () ||
+         param == libcli_get_debug_hook () );
+
+}
+
+bool 
+cmd_tree_is_token_a_hook (char *token) {
+
+    param_t *root = libcli_get_root_hook ();
+    return (cmd_tree_find_matching_param (root, token) != NULL); 
+}
+
+static param_t*
+array_of_possibilities[POSSIBILITY_ARRAY_SIZE];
+
+static inline int
+is_cmd_string_match(param_t *param, const char *str, bool *ex_match){
+    
+    *ex_match = false;
+    int str_len = strlen(str);
+    int str_len_param = param->cmd_type.cmd->len;
+
+    int rc =  (strncmp(param->cmd_type.cmd->cmd_name, 
+                   str, str_len));
+
+    if ( !rc && (str_len == str_len_param )) {
+        *ex_match = true;
+    }
+    return rc;
+}
+
+param_t*
+cmd_tree_find_matching_param (param_t *parent, const char *cmd_name){
+    
+    int i = 0,
+         j = 0,
+        choice = -1;
+    param_option_t *opt;
+    param_t *leaf_param = NULL;
+         
+    bool ex_match = false;
+    
+    memset(array_of_possibilities, 0, POSSIBILITY_ARRAY_SIZE * sizeof(param_t *));
+
+    if (!parent) {
+        return NULL;
+    }
+
+    FOR_EACH_PARAM_OPTION (parent, opt) {
+
+        if (!opt->param) {
+            continue;
+        }
+
+        if (IS_PARAM_LEAF(opt->param)) {
+            leaf_param = opt->param;
+            continue;
+        }
+
+        if (is_cmd_string_match(opt->param, cmd_name, &ex_match) == 0) {
+
+            if (ex_match) {
+                 array_of_possibilities[ 0 ] = opt->param;
+                 j = 1;
+                break;
+            }
+            array_of_possibilities[ j++ ] = opt->param;
+            assert (j < POSSIBILITY_ARRAY_SIZE);
+            continue;
+        }
+    }
+
+    if(leaf_param && j == 0)
+        return leaf_param;
+
+    if( j == 0)
+        return NULL;
+
+    if(j == 1)
+        return array_of_possibilities[0];
+
+    /* More than one param matched*/
+    printw("%d possibilities :\n", j);
+    for(i = 0; i < j; i++)
+        printw("%-2d. %s\n", i, GET_CMD_NAME(array_of_possibilities[i]));
+
+    printw("Choice [0-%d] : ? ", j-1);
+    scanw("%d", &choice);
+    
+    if(choice < 0 || choice > (j-1)){
+        printw("\nInvalid Choice");
+        return NULL;
+    }
+    return array_of_possibilities[choice];   
+}
+
+void 
+libcli_support_cmd_negation (param_t *param) {   
+
+    param_option_t *opt;
+    assert(param);
+
+    param_t *negate_param = cmd_tree_find_matching_param(
+                            param, NEGATE_CHARACTER);
+
+    if (negate_param && IS_PARAM_NO_CMD(negate_param)) {
+
+        printw ("Error : Attempt to add Duplicate Negate param in cmd : %s\n",
+                        GET_CMD_NAME(param));
+        assert(0);
+    }
+
+    negate_param = (param_t *)calloc (1, sizeof (param_t));
+    init_param (negate_param , NO_CMD, NEGATE_CHARACTER, NULL, NULL, INVALID, NULL, "Cmd Negation");
+
+    /* Share a copy of parent's children under the negate param. */
+    FOR_EACH_PARAM_OPTION (param, opt) {
+        param_option_list_append (negate_param, opt->param);
+    }
+
+    param_option_list_append (param, negate_param);
+    negate_param->flags = PARAM_F_NO_EXPAND;
+}
+
+static void 
+libcli_cleanup_parent_pointers_internal (param_t *param) {
+
+    param_option_t *opt;
+
+    if (!param) return;
+    if (param == &pipe) return;
+
+    FOR_EACH_PARAM_OPTION (param, opt) {
+        if (opt->param && (opt->param->flags & PARAM_F_RECURSIVE)) continue;
+        libcli_cleanup_parent_pointers_internal (opt->param);
+    }
+
+    /* In our library design, param->parent is suppose to be null during normal
+        opn*/
+    param->parent = NULL;
+}
+
+static void 
+libcli_cleanup_parent_pointers () {
+
+    libcli_cleanup_parent_pointers_internal (libcli_get_root_hook());
+}
+
+/* subtree to implement [-u <int> -d <int> ] options. Use calloc since subtree 
+    is shared among include, exclude, grep */
+static void 
+cmd_tree_u_d_options_subtree (param_t *include, param_t *include_leaf) {
+
+    {
+        param_t *_u = (param_t *)calloc (1, sizeof (param_t));
+        init_param (_u , CMD, "-A", NULL, NULL, INVALID, NULL, "Display lines above the matching pattern");
+        libcli_register_param (include, _u);
+        {
+            param_t *_u_val = (param_t *)calloc (1, sizeof (param_t));
+            init_param (_u_val , LEAF, NULL, NULL, NULL, INT, "u-val", "Number of lines below the matching pattern");
+            libcli_register_param (_u, _u_val);
+            libcli_register_param (_u_val, include_leaf);
+            {
+                param_t *_d =  (param_t *)calloc (1, sizeof (param_t));
+                init_param (_d , CMD, "-B", NULL, NULL, INVALID, NULL, "Display lines below the matching pattern");
+                libcli_register_param (_u_val, _d);
+                {
+                    param_t *_d_val =  (param_t *)calloc (1, sizeof (param_t));
+                    init_param (_d_val , LEAF, NULL, NULL, NULL, INT, "d-val", "Number of lines below the matching pattern");
+                    libcli_register_param (_d, _d_val);
+                    libcli_register_param (_d_val, include_leaf);
+                }
+            }
+        }
+    }
+
+    {
+        param_t *_d = (param_t *)calloc (1, sizeof (param_t));
+        init_param (_d , CMD, "-B", NULL, NULL, INVALID, NULL, "Display lines below the matching pattern");
+        libcli_register_param (include, _d);
+        {
+            param_t *_d_val = (param_t *)calloc (1, sizeof (param_t));
+            init_param (_d_val , LEAF, NULL, NULL, NULL, INT, "d-val", "Number of lines below the matching pattern");
+            libcli_register_param (_d, _d_val);
+            libcli_register_param (_d_val, include_leaf);
+        }
+    }
+
+}
+
+
+static void
+cmd_tree_construct_filter_subtree () {
+
+    init_param (&pipe, CMD, "|", NULL, NULL, INVALID, NULL, "pipe");
+    pipe.flags |= (PARAM_F_NO_EXPAND );
+    init_param (&count, CMD, "count", NULL, NULL, INVALID, NULL, "count lines");
+    init_param (&save, CMD, "save", NULL, NULL, INVALID, NULL, "save to a file");
+    init_param (&save_file, LEAF, NULL, NULL, NULL, STRING, "sfile-name", "file name");
+
+    {
+        libcli_register_param (&save, &save_file);
+    }
+    {
+        libcli_register_param (&pipe, &count);
+    }
+    {
+        libcli_register_param (&pipe, &save);
+    }
+    {
+        init_param (&include,  CMD, "include", NULL, NULL, INVALID, NULL, "Include Pattern");
+        libcli_register_param (&pipe, &include);
+        {
+            init_param (&include_leaf,  LEAF, NULL, NULL, NULL, STRING, "incl-pattern", "Include Pattern");
+            libcli_register_param (&include, &include_leaf);
+            libcli_register_param (&include_leaf, &pipe);
+        }
+    }
+    {
+        init_param (&exclude,  CMD, "exclude", NULL, NULL, INVALID, NULL, "Exclude Pattern");
+        libcli_register_param (&pipe, &exclude);
+        {
+            init_param (&exclude_leaf,  LEAF, NULL, NULL, NULL, STRING, "excl-pattern", "Exclude Pattern");
+            libcli_register_param (&exclude, &exclude_leaf);
+            libcli_register_param (&exclude_leaf, &pipe);
+        }
+    }
+    {
+        init_param(&grepx, CMD, "grep", NULL, NULL, INVALID, NULL, "grep RegEx Pattern");
+        libcli_register_param(&pipe, &grepx);
+        {
+            init_param(&grepx_leaf, LEAF, NULL, NULL, NULL, STRING, "grep-pattern", "Grep Pattern");
+            libcli_register_param(&grepx, &grepx_leaf);
+            libcli_register_param(&grepx_leaf, &pipe);
+        }
+    }
+    {
+        init_param (&xinclude,  CMD, "xinclude", NULL, NULL, INVALID, NULL, "xInclude Pattern");
+        libcli_register_param (&pipe, &xinclude);
+        {
+            init_param (&xinclude_leaf,  LEAF, NULL, NULL, NULL, STRING, "xincl-pattern", "xInclude Pattern");
+            libcli_register_param (&xinclude, &xinclude_leaf);
+            cmd_tree_u_d_options_subtree (&xinclude, &xinclude_leaf);
+        }
+    }
+    {
+        init_param (&refreshx, CMD, "refresh", NULL, NULL, INVALID, NULL, "Refresh the command repeatedly");
+        init_param (&refresh_val, LEAF, NULL, NULL, NULL, INT, "refresh-val", "Refresh Time Interval in Sec");
+        libcli_register_param (&refreshx, &refresh_val);
+        libcli_register_param (&pipe, &refreshx);
+        libcli_register_param (&refresh_val, &pipe);
+        {
+             init_param (&clrscr, CMD, "cls", NULL, NULL, INVALID, NULL, "Clear the screen");
+             libcli_register_param (&refresh_val, &clrscr);
+        }
+    }
+}
+
+static void 
+libcli_augment_cmd_tree_with_filters (param_t *param) {
+
+    param_option_t *opt;
+    if (!param) return;
+    if (param->flags & PARAM_F_NO_EXPAND) return;
+    if (param == &pipe) return;
+
+    FOR_EACH_PARAM_OPTION (param, opt) {
+        /* libcli_param_recursive() registers a leaf as its own child.
+         * Skip that self-edge so debug/show filter walks do not recurse forever. */
+        if (opt->param == param)
+            continue;
+        libcli_augment_cmd_tree_with_filters (opt->param);
+    }
+
+    if (param->callback[0]) {
+        libcli_register_param (param, &pipe);
+    }
+}
+
+static void 
+ libcli_augment_show_cmds () {
+
+    param_t *show_param = libcli_get_show_hook();
+    libcli_augment_cmd_tree_with_filters (show_param);
+ }
+
+ static void 
+ libcli_augment_debug_cmds () {
+
+    param_t *debug_param = libcli_get_debug_hook();
+    libcli_augment_cmd_tree_with_filters (debug_param);
+ }
+
+void
+cmd_tree_init () {
+
+    init_token_array();
+    libcli_build_default_cmdtree();
+    cmd_tree_init_cursors () ;
+}
+
+void 
+libcli_init_done () {
+
+    cmd_tree_construct_filter_subtree();
+    libcli_augment_show_cmds ();
+    libcli_augment_debug_cmds ();
+    libcli_support_cmd_negation (libcli_get_config_hook());
+    libcli_cleanup_parent_pointers ();
+}
+
+bool 
+cmd_tree_is_param_pipe (param_t *param) {
+
+    return param == &pipe;
+}
+
+bool 
+cmd_tree_is_filter_param (param_t *param) {
+
+    return (param == &pipe || param == &count || param == &save ||
+                param == &save_file || param == &include ||
+                param == &include_leaf || param == &exclude ||
+                param == &exclude_leaf ||
+                param == &grepx || param == &grepx_leaf ||
+                param == &xinclude || param == &xinclude_leaf);
+}
+
+void 
+libcli_param_list(param_t *param) {
+
+    param->flags |= PARAM_F_LIST;
+}
+
+void 
+libcli_register_display_callback (param_t *param, display_possible_values_callback cbk) {
+
+    param->disp_callback = cbk;
+}
+
+void 
+libcli_param_match_regex (param_t *param, char *reg_ex) {
+
+    assert (!cmd_tree_is_filter_param(param));
+    assert (IS_PARAM_LEAF (param));
+    assert (!(param->flags & PARAM_F_REG_EX_MATCH));
+    param->flags |= PARAM_F_REG_EX_MATCH;
+    strncpy (param->cmd_type.leaf->reg_ex, reg_ex, LEAF_REG_EX_MAX_LEN);
+}
