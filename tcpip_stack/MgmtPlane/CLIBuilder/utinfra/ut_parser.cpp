@@ -1,0 +1,632 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <memory.h>
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <string.h>
+#include <pthread.h>
+#include <mqueue.h>
+#include <errno.h>
+#include <semaphore.h>
+#include "../libcli.h"
+#include "../../libs/gluethread/glthread.h"
+#include "../string_util.h"
+#include "../CmdTree/cmdcodes_def.h"
+
+#define MAX_MESSAGES    1
+#define MAX_MSG_SIZE       4096 /* must match with CUM_BUFFER_MAX_SIZE */
+#define QUEUE_PERMISSIONS   0660
+
+#define UT_PARSER_BUFF_MAX_SIZE MAX_MSG_SIZE
+
+/* Global variables for UT parser */
+int UT_PARSER_MSG_Q_FD; 
+bool TC_RUNNING = false;
+static char ut_parser_recv_buff[UT_PARSER_BUFF_MAX_SIZE];
+static int ut_parser_recv_buff_data_size;
+static bool ut_parser_debug = false;
+static FILE *ut_log_file = NULL;
+static uint64_t int_store1, int_store2, int_store3;
+static char string_store1[256], string_store2[256], string_store3[256];
+static struct timespec mq_wait_time;
+
+
+
+extern bool
+cmdtc_parse_raw_command (unsigned char *command, int cmd_size) ;
+
+/* Helper function to write buffer to file, filtering out null bytes and control characters */
+static void
+write_buffer_filtered(FILE *fp, const char *buffer, int size) {
+    int i;
+    int last_was_printable = 0;
+    
+    for (i = 0; i < size; i++) {
+        unsigned char c = (unsigned char)buffer[i];
+        
+        /* Skip null bytes and other control characters except standard whitespace */
+        if (c == '\0') {
+            /* If we had printable text before this null, and we'll have printable text after,
+               treat the null as a separator by adding a space */
+            if (last_was_printable && i + 1 < size && buffer[i + 1] != '\0' && buffer[i + 1] >= 32) {
+                fputc(' ', fp);
+            }
+            continue;
+        }
+        
+        /* Allow standard whitespace */
+        if (c == '\n' || c == '\r' || c == '\t') {
+            fputc(c, fp);
+            last_was_printable = 0;
+            continue;
+        }
+        
+        /* Allow printable ASCII characters (space through ~) */
+        if (c >= 32 && c <= 126) {
+            fputc(c, fp);
+            last_was_printable = 1;
+        }
+        /* Skip other control characters */
+    }
+}
+
+void
+ut_parser_init ( ) {
+
+    struct mq_attr attr;
+
+    ut_log_file = fopen("CLIBuilder/utinfra/ut_log_file.txt", "w");
+    assert(ut_log_file);
+
+    /* Initialize buffers to prevent binary data */
+    memset(ut_parser_recv_buff, 0, sizeof(ut_parser_recv_buff));
+    ut_parser_recv_buff_data_size = 0;
+    memset(string_store1, 0, sizeof(string_store1));
+    memset(string_store2, 0, sizeof(string_store2));
+    memset(string_store3, 0, sizeof(string_store3));
+    int_store1 = int_store2 = int_store3 = 0;
+
+    attr.mq_flags = 0;
+    attr.mq_maxmsg = MAX_MESSAGES;
+    attr.mq_msgsize = MAX_MSG_SIZE;
+    attr.mq_curmsgs = 0;
+
+    if ((UT_PARSER_MSG_Q_FD = mq_open("/ut_parser_msg_q",
+                                      O_RDWR | O_CREAT | O_NONBLOCK,
+                                      QUEUE_PERMISSIONS, &attr)) == -1) {
+
+        printw("UT Parser mq_open failed, errno = %d\n", errno);
+        exit(1);
+    }
+
+    mq_wait_time.tv_sec = 3;
+    mq_wait_time.tv_nsec = 0;
+}
+
+typedef struct tc_result_ {
+
+    uint16_t step_no;
+    bool pass;
+    bool pattern_match;
+    glthread_t glue;
+} tc_result_t;
+GLTHREAD_TO_STRUCT(glue_to_tc_result, tc_result_t, glue);
+
+static void
+tc_append_result(glthread_t *head, uint16_t step_no, bool pass, bool match) {
+
+    tc_result_t *res = (tc_result_t *)calloc(1, sizeof(tc_result_t));
+    res->step_no = step_no;
+    res->pass = pass;
+    res->pattern_match = match;
+    init_glthread(&res->glue);
+    glthread_add_last(head, &res->glue);
+}
+
+static void
+tc_print_result (uint16_t tc_no, glthread_t *head) {
+
+    int rc = 0;
+    glthread_t *curr;
+    tc_result_t *res;
+    char buff[128];
+    int pass_cnt = 0, fail_cnt = 0, total_cnt = 0;
+
+    rc = sprintf(buff, "\n****  Result ******\n");
+    //printw("%s", buff);
+    fwrite(buff, 1, rc, ut_log_file);
+
+    ITERATE_GLTHREAD_BEGIN(head, curr) {
+
+        res = glue_to_tc_result(curr);
+        rc = sprintf(buff, "%s  STEP: %d : %s\n", 
+            res->pattern_match ? "PATTERN-MATCH" : "PATTERN-NOT-MATCH",
+            res->step_no, res->pass ? "PASS" : "FAIL");
+        //printw("%s", buff);
+        fwrite(buff, 1, rc, ut_log_file);
+        res->pass ? pass_cnt++ : fail_cnt++;
+        total_cnt++;
+    } ITERATE_GLTHREAD_END(head, curr);
+
+    printw ("TC# : %-4d  Total TC : %-4d   Pass : %-4d   Fail %d\n", tc_no, total_cnt, pass_cnt, fail_cnt);
+    rc = sprintf(buff, "TC# : %-4d  Total TC : %-4d   Pass : %-4d   Fail %d\n", 
+        tc_no, total_cnt, pass_cnt, fail_cnt);
+    fwrite(buff, 1, rc, ut_log_file);
+    fflush(ut_log_file);
+}
+
+static void
+tc_cleanup_result_list(glthread_t *result_head) {
+
+    glthread_t *curr;
+    tc_result_t *res;
+
+    ITERATE_GLTHREAD_BEGIN(result_head, curr) {
+
+        remove_glthread(curr);
+        res = glue_to_tc_result(curr);
+        free(res);
+    }
+    ITERATE_GLTHREAD_END(result_head, curr);
+}
+
+bool
+run_test_case(char *file_name, uint16_t tc_no) {
+
+    int rc = 0;
+    char *token;
+    char buff[512];
+    char *fget_ptr;
+    bool tc_found = false;
+    glthread_t result_head;
+    uint16_t current_tc_no;
+    char line[512];
+    uint16_t current_step_no;
+
+    /* Initialize buffers to prevent any garbage data */
+    memset(buff, 0, sizeof(buff));
+    memset(line, 0, sizeof(line));
+    fget_ptr = NULL;
+    init_glthread(&result_head);
+
+    FILE *fp = fopen (file_name, "r");
+    assert(fp);
+
+    while (( fget_ptr = (fgets (line, sizeof(line), fp)))) {
+
+            if (strlen(line) == 1 && line[0] == '\n') {
+                //printw("\n");
+                rc = sprintf (buff, "\n");
+                fwrite(buff, 1, rc, ut_log_file);
+                fflush(ut_log_file);
+            }
+
+            if (line[0] != ':') continue;
+            strtok(line, "\n");
+
+            /* replace the $INT_STOREX in a line with actual integer value*/
+            rc = sprintf(buff, "%lu", int_store1);
+            assert(replaceSubstring(line, "$INT_STORE1", buff, sizeof(buff)) >= 0);
+            rc = sprintf(buff, "%lu", int_store2);
+            assert (replaceSubstring(line, "$INT_STORE2", buff, sizeof(buff))  >= 0);
+            rc = sprintf(buff, "%lu", int_store3);
+            assert(replaceSubstring(line, "$INT_STORE3", buff, sizeof(buff))  >= 0);
+
+
+            /* replace the $STRING_STOREX in a line with actual string value*/
+            string_sanitize_token(string_store1);
+            rc = sprintf(buff, "%s", string_store1);
+            assert(replaceSubstring(line, "$STRING_STORE1", buff, sizeof(buff)) >= 0);
+            string_sanitize_token(string_store2);
+            rc = sprintf(buff, "%s", string_store2);
+            assert(replaceSubstring(line, "$STRING_STORE2", buff, sizeof(buff)) >= 0);
+            string_sanitize_token(string_store3);
+            rc = sprintf(buff, "%s", string_store3);
+            assert(replaceSubstring(line, "$STRING_STORE3", buff, sizeof(buff)) >= 0);
+
+            if (strncmp (line, ":TESTCASE-BEGIN:", strlen(":TESTCASE-BEGIN:")) == 0) {
+
+                token = &line[0] + strlen(":TESTCASE-BEGIN:");
+                current_tc_no = atoi(token);
+
+                /* If the user specified particular testcase no in CLI, then find that TC only*/
+                while (tc_no &&  current_tc_no != tc_no) {
+
+                    /* skip to next test case */
+                    while (( fget_ptr = fgets (line, sizeof(line), fp))) {
+
+                             if (strncmp (line, ":TESTCASE-BEGIN:", strlen(":TESTCASE-BEGIN:"))) {
+                                 continue;
+                             }
+                             break;
+                    }
+
+                    if (!fget_ptr) break;
+                    token = strtok(line, ":") ;
+                    token = strtok(NULL, ":") ;
+                    current_tc_no = atoi(token);
+                }
+                
+               if (!fget_ptr) break;
+
+               /* Test case found */
+                rc = sprintf(buff, "\n ***** Executing Test case : %s - %d ***** \n",
+                                    file_name,  current_tc_no);
+                //printw("%s", buff);
+                fwrite(buff, 1, rc, ut_log_file);
+                fflush(ut_log_file);
+                TC_RUNNING = true;
+                tc_found = true;
+            }
+
+
+
+            else if (strncmp (line, ":TESTCASE-END:", strlen(":TESTCASE-END:")) == 0) {
+
+               /* Test case found */
+                rc = sprintf(buff, "\n ***** Test case : %s - %d Finished ***** \n",
+                                    file_name,  current_tc_no);
+                //printw("%s", buff);
+                fwrite(buff, 1, rc, ut_log_file);
+
+                tc_print_result(current_tc_no, &result_head);
+                tc_cleanup_result_list(&result_head);
+                fflush(ut_log_file);
+
+                if (  tc_no && TC_RUNNING ) {
+                    break;
+                }
+            }
+
+
+
+            else if (strncmp (line, ":DESC:", strlen(":DESC:")) == 0) {
+                
+                token = &line[0] + strlen(":DESC:");
+                rc = sprintf(buff, "Description : %s\n", token);
+                 //printw("%s", buff);
+                 fwrite(buff, 1, rc, ut_log_file);
+                 fflush(ut_log_file);
+            }
+
+
+
+            else if (strncmp (line, ":STEP:", strlen(":STEP:")) == 0) {
+
+                token = &line[0] + strlen(":STEP:");
+                rc = sprintf(buff, "STEP : %s\n", token);
+                //printw("%s", buff);
+                fwrite(buff, 1, rc, ut_log_file);
+                fflush(ut_log_file);
+                current_step_no = atoi(token);
+            }
+
+
+
+            else if (strncmp (line, ":CMD:", strlen(":CMD:")) == 0) {
+
+                token = &line[0] + strlen(":CMD:");
+                rc = sprintf(buff, "CMD : %s\n", token);
+                //printw("%s", buff);
+                fwrite(buff, 1, rc, ut_log_file);
+                fflush(ut_log_file);
+                cmdtc_parse_raw_command ((unsigned char *)token, strlen (token));
+
+                /* Operational cmds (show, run/ping, ...) always mq_send Cum
+                 * via UnsetFilterContext. Config cmds do not. With
+                 * MAX_MESSAGES=1, skipping the receive after run/ping fills
+                 * the queue (EAGAIN) and the next show drains stale ping
+                 * output instead of its own show data. */
+                {
+                const char *cmdp = token;
+                while (*cmdp == ' ' || *cmdp == '\t') cmdp++;
+                bool is_config_cmd =
+                    (strncmp(cmdp, "config", 6) == 0 &&
+                     (cmdp[6] == '\0' || cmdp[6] == ' ' || cmdp[6] == '\t'));
+
+                if ( !is_config_cmd && TC_RUNNING) {
+
+                    if (ut_parser_debug) {
+                        rc = sprintf(buff, "Waiting for backend data\n");
+                        //printw("%s", buff);
+                        fwrite(buff, 1, rc, ut_log_file);
+                    }
+
+                    /* Clear recv buffer so stale bytes never leak into the log */
+                    memset(ut_parser_recv_buff, 0, sizeof(ut_parser_recv_buff));
+                    ut_parser_recv_buff_data_size = 0;
+
+                    if ((ut_parser_recv_buff_data_size =
+                             mq_timedreceive(UT_PARSER_MSG_Q_FD,
+                                        ut_parser_recv_buff, MAX_MSG_SIZE, NULL,
+                                        &mq_wait_time)) == -1) {
+
+                            //printw ("Msg Q  Time out : No Data Recvd from Backend\n");
+                            rc = sprintf(buff, "Msg Q  Time out : No Data Recvd from Backend\n");
+                            fwrite(buff, 1, rc, ut_log_file);
+                            ut_parser_recv_buff_data_size = 0;
+                            memset(ut_parser_recv_buff, 0, sizeof(ut_parser_recv_buff));
+                    }
+                    else {
+                        /* Ensure buffer is null-terminated to prevent writing binary data */
+                        if (ut_parser_recv_buff_data_size > 0 && 
+                            ut_parser_recv_buff_data_size < UT_PARSER_BUFF_MAX_SIZE) {
+                            ut_parser_recv_buff[ut_parser_recv_buff_data_size] = '\0';
+                        }
+
+                        if (ut_parser_debug) {
+                            //printw("Mq Data Recvd by UT Parser : \n");
+                            //printw("%s", ut_parser_recv_buff);
+                            /* Must use rc = (not rc +=): fwrite writes rc bytes and
+                             * does not stop at NUL, so += would dump leftover CMD
+                             * text still sitting in buff after the previous sprintf. */
+                            rc = sprintf(buff, "Mq Data Recvd by UT Parser : \n");
+                            fwrite(buff, 1, rc, ut_log_file);
+                            /* Write buffer while filtering out null bytes */
+                            write_buffer_filtered(ut_log_file, ut_parser_recv_buff, ut_parser_recv_buff_data_size);
+                        }
+                    }
+                }
+                } /* is_config_cmd scope */
+                fflush(ut_log_file);
+            }
+
+
+
+            else if (strncmp (line, ":PATTERN-MATCH:", strlen(":PATTERN-MATCH:")) == 0) {
+
+                int rc1 = 0;
+                char pattern [256];
+                memset(pattern, 0, sizeof(pattern));
+                token = &line[0] + strlen(":PATTERN-MATCH:");
+                rc1 = sprintf(pattern + rc1, "%s", token);
+              
+                //printw("pattern to be matched : |%s|\n", pattern);
+                fprintf(ut_log_file, "pattern to be matched : |%s|\n", pattern);
+
+                if (pattern_match(ut_parser_recv_buff,  ut_parser_recv_buff_data_size, pattern)) {
+                    //printw("PASS\n");
+                    rc = sprintf(buff, "PASS\n");
+                    fwrite(buff, 1, rc, ut_log_file);
+                    tc_append_result(&result_head, current_step_no, true, true);
+                }
+                else {
+                   //printw("FAIL\n");
+                   rc = sprintf(buff,  "FAIL\n");
+                   fwrite(buff, 1, rc, ut_log_file);
+                   tc_append_result(&result_head, current_step_no, false, true);
+                }
+                fflush(ut_log_file);
+            }
+
+            else if (strncmp (line, ":PATTERN-NOT-MATCH:", strlen(":PATTERN-NOT-MATCH:")) == 0) {
+
+                int rc1 = 0;
+                char pattern [256];
+                memset(pattern, 0, sizeof(pattern));
+                token = &line[0] + strlen(":PATTERN-NOT-MATCH:");
+                rc1 += sprintf(pattern + rc1, "%s", token);
+
+                //printw("pattern to be not matched : |%s|\n", pattern);
+                fprintf(ut_log_file, "pattern to be not matched : |%s|\n", pattern);
+
+                if (!pattern_match(ut_parser_recv_buff, ut_parser_recv_buff_data_size, pattern)) {
+                    //printw("PASS\n");
+                    rc = sprintf(buff, "PASS\n");
+                    fwrite(buff, 1, rc, ut_log_file);
+                    tc_append_result(&result_head, current_step_no, true, false);
+                }
+                else {
+                    //printw("FAIL\n");
+                    rc = sprintf(buff, "FAIL\n");
+                    fwrite(buff, 1, rc, ut_log_file);
+                    tc_append_result(&result_head, current_step_no, false, false);
+                }
+                fflush(ut_log_file);
+            }
+
+
+
+            else if (strncmp (line, ":SLEEP:", strlen(":SLEEP:")) == 0) {
+
+                    token = &line[0] + strlen(":SLEEP:");
+                    rc = sprintf(buff, "Sleeping for %s sec\n", token);
+                    //printw("%s", buff);
+                    fwrite(buff, 1, rc, ut_log_file);
+                    fflush(ut_log_file);
+                    sleep(atoi(token));
+            }
+
+
+
+            else if (strncmp (line, ":ABORT:", strlen(":ABORT:")) == 0) {
+                    //printw("Aborted\n");
+                    rc = sprintf(buff, "Aborted\n");
+                    fwrite(buff, 1, rc, ut_log_file);
+                    break;
+            }
+
+
+
+            else if (strncmp (line, ":PAUSE:", strlen(":PAUSE:")) == 0) {
+                    //printw("Paused\n");
+                    rc = sprintf(buff, "Paused\n");
+                    fwrite(buff, 1, rc, ut_log_file);
+                     fflush(ut_log_file);
+                    getchar();
+            }
+
+
+
+             else if (strncmp (line, ":GREP:", strlen(":GREP:")) == 0) {
+
+                    token = &line[0] + strlen(":GREP:");
+                    //printw ("Grep Pattern : %s\n", token);
+                    rc = sprintf (buff, "Grep Pattern : %s\n", token);
+                    fwrite(buff, 1, rc, ut_log_file);
+                    ut_parser_recv_buff_data_size = 
+                        grep (ut_parser_recv_buff, ut_parser_recv_buff_data_size, token);
+                    //printw ("Output After Grep : \n");
+                    //printw("%s", ut_parser_recv_buff);
+                    rc = sprintf (buff, "Output After Grep : \n");
+                    fwrite(buff, 1, rc, ut_log_file);
+                    /* Write buffer while filtering out null bytes */
+                    write_buffer_filtered(ut_log_file, ut_parser_recv_buff, ut_parser_recv_buff_data_size);
+                    fflush(ut_log_file);
+             }
+
+
+
+             else if (strncmp (line, ":PRINT:", strlen(":PRINT:")) == 0) {
+
+                    token = &line[0] + strlen(":PRINT:");
+                    //printw ("INFO : %s\n", token);
+                    rc = sprintf (buff, "INFO : %s\n", token);
+                    fwrite(buff, 1, rc, ut_log_file);
+                    fflush(ut_log_file);
+             }
+
+
+
+            else if (strncmp (line, ":INT_STORE1:", strlen(":INT_STORE1:")) == 0) {
+
+                    int index = 0;
+                    token = &line[0] + strlen(":INT_STORE1:");
+                    index = atoi(token);
+                    assert(index);
+                    int_store1 = string_fetch_integer(ut_parser_recv_buff, 
+                                        ut_parser_recv_buff_data_size, index);
+                    //printw("int_store1 = %lu at index %d\n", int_store1, index);
+                    rc = sprintf (buff, "int_store1 = %lu at index %d\n", int_store1, index);
+                    fwrite(buff, 1, rc, ut_log_file);
+                     fflush(ut_log_file);
+            }
+            
+            else if (strncmp (line, ":INT_STORE2:", strlen(":INT_STORE2:")) == 0) {
+
+                    int index = 0;
+                    token = &line[0] + strlen(":INT_STORE2:");
+                    index = atoi(token);
+                    assert(index);
+                    int_store2 = string_fetch_integer(ut_parser_recv_buff, 
+                                        ut_parser_recv_buff_data_size, index);
+                    //printw("int_store2 = %lu at index %d\n", int_store2, index);
+                    rc = sprintf (buff, "int_store2 = %lu at index %d\n", int_store2, index);
+                    fwrite(buff, 1, rc, ut_log_file);
+                    fflush(ut_log_file);
+            }
+            
+            else if (strncmp (line, ":INT_STORE3:", strlen(":INT_STORE3:")) == 0) {
+
+                    int index = 0;
+                    token = &line[0] + strlen(":INT_STORE3:");
+                    index = atoi(token);
+                    assert(index);
+                    int_store3 = string_fetch_integer(ut_parser_recv_buff, 
+                                        ut_parser_recv_buff_data_size, index);
+                    //printw("int_store3 = %lu at index %d\n", int_store3, index);
+                    rc = sprintf (buff, "int_store3 = %lu at index %d\n", int_store3, index);
+                    fwrite(buff, 1, rc, ut_log_file);
+                     fflush(ut_log_file);
+            }
+
+
+            else if (strncmp (line, ":STRING_STORE1:", strlen(":STRING_STORE1:")) == 0) {
+
+                    int index = 0;
+                    token = &line[0] + strlen(":STRING_STORE1:");
+                    index = atoi(token);
+                    assert(index);
+                    string_fetch_string(ut_parser_recv_buff, 
+                                        ut_parser_recv_buff_data_size, index, string_store1);
+                    //printw("string_store1 = %s at index %d\n", buff, index);
+                    rc = sprintf (buff, "string_store1 = %s at index %d\n", string_store1, index);
+                    fwrite(buff, 1, rc, ut_log_file);
+                    fflush(ut_log_file);
+            }
+            
+            else if (strncmp (line, ":STRING_STORE2:", strlen(":STRING_STORE2:")) == 0) {
+
+                    int index = 0;
+                    token = &line[0] + strlen(":STRING_STORE2:");
+                    index = atoi(token);
+                    assert(index);
+                    string_fetch_string(ut_parser_recv_buff, 
+                                        ut_parser_recv_buff_data_size, index, string_store2);
+                    //printw("string_store2 = %s at index %d\n", buff, index);
+                    rc = sprintf (buff, "string_store2 = %s at index %d\n", string_store2, index);
+                    fwrite(buff, 1, rc, ut_log_file);
+                    fflush(ut_log_file);
+            }
+            
+            else if (strncmp (line, ":STRING_STORE3:", strlen(":STRING_STORE3:")) == 0) {
+
+                    int index = 0;
+                    token = &line[0] + strlen(":STRING_STORE3:");
+                    index = atoi(token);
+                    assert(index);
+                    string_fetch_string(ut_parser_recv_buff, 
+                                        ut_parser_recv_buff_data_size, index, string_store3);
+                    //printw("string_store3 = %s at index %d\n", buff, index);
+                    rc = sprintf (buff, "string_store3 = %s at index %d\n", string_store3, index);
+                    fwrite(buff, 1, rc, ut_log_file);
+                    fflush(ut_log_file);
+
+            }
+
+
+    }
+
+    fclose(fp);
+    TC_RUNNING = false;
+    fflush(ut_log_file);
+    return tc_found;
+}
+
+static void
+set_ut_debug_flag(char * ut_enable_flag) {
+
+    if (strncmp(ut_enable_flag, "enable", strlen("enable")) == 0)
+        ut_parser_debug = true;
+    else
+        ut_parser_debug = false;
+}
+
+/* This API is not used */
+int
+ut_test_handler (int64_t cmdcode,
+                            Stack_t *tlv_stack,
+                            op_mode enable_or_disable) {
+
+    tlv_struct_t *tlv = NULL;
+    unsigned char *ut_file_name = NULL;
+    unsigned char *ut_enable_flag = NULL;
+    int tc_no = 0;
+
+    TLV_LOOP_STACK_BEGIN(tlv_stack, tlv){
+
+        if (parser_match_leaf_id (tlv->leaf_id, "ut-file-name"))
+            ut_file_name =  tlv->value;
+        else if (parser_match_leaf_id (tlv->leaf_id, "tc-no"))
+            tc_no = atoi((const char *)tlv->value);
+        else if (parser_match_leaf_id (tlv->leaf_id, "ut-enable"))
+            ut_enable_flag = tlv->value;
+    } TLV_LOOP_END;
+
+    switch(cmdcode) {
+        case  CMDCODE_RUN_UT_TC:
+            run_test_case ((char *)ut_file_name, tc_no);
+            break;
+        case CMDCODE_DEBUG_UT:
+            set_ut_debug_flag((char *)ut_enable_flag);
+            break;
+        default : ;
+    }
+    return 0;
+}

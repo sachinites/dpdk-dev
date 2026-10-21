@@ -1,0 +1,474 @@
+/*
+ * =====================================================================================
+ *
+ *       Filename:  string_util.c
+ *
+ *    Description:  String utilities
+ *
+ *        Version:  1.0
+ *        Created:  Thursday 03 August 2017 05:35:37  IST
+ *       Revision:  1.0
+ *       Compiler:  gcc
+ *
+ *         Author:  Er. Abhishek Sagar, Networking Developer (AS), sachinites@gmail.com
+ *        Company:  Brocade Communications(Jul 2012- Mar 2017), Current : Juniper Networks(Apr 2017 - Present)
+ *
+ * =====================================================================================
+ */
+
+
+#include <stdlib.h>
+#include <assert.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <regex.h>
+#include "string_util.h"
+#include "cli_const.h"
+
+static char a_str[MAX_COMMAND_LENGTH];
+char temp[ LEAF_ID_SIZE + 2];
+
+static char * tokens[MAX_CMD_TREE_DEPTH];
+
+void
+init_token_array(){
+
+    int i = 0;
+    for(; i < MAX_CMD_TREE_DEPTH; i++){
+        tokens[i] = (char *)calloc(1, LEAF_VALUE_HOLDER_SIZE);
+    }
+}
+
+void
+re_init_tokens(int token_cnt){
+    
+    int i = 0;
+    for(; i < token_cnt; i++){
+        memset(tokens[i], 0, LEAF_VALUE_HOLDER_SIZE);
+    }
+}
+
+void
+tokenize(char *token, unsigned int size, unsigned int index){
+
+    if (index >= MAX_CMD_TREE_DEPTH)
+        return;
+
+    if(size > LEAF_VALUE_HOLDER_SIZE)
+        assert(0);
+
+    strncpy((char *)tokens[index], token, size);
+}
+
+void
+untokenize(unsigned int index){
+
+    if (index >= MAX_CMD_TREE_DEPTH)
+        return;
+
+    memset(tokens[index], 0, LEAF_VALUE_HOLDER_SIZE);
+}
+
+char *
+get_token(unsigned int index){
+
+    return tokens[index];
+}
+
+char** tokenizer(unsigned char* _a_str, const char a_delim, int *token_cnt){
+   
+    char *token = NULL;
+    int i = 0;
+    char delim[2];
+    memset(a_str, 0, MAX_COMMAND_LENGTH);
+    strncpy((char *)a_str, _a_str, strlen(_a_str));
+    a_str[strlen(_a_str)] = '\0';
+
+    string_space_trim(a_str);
+
+    if(strlen(a_str) < 1){
+        *token_cnt = 0;
+        return NULL;
+    }
+
+    delim[0] = a_delim;
+    delim[1] = '\0';
+
+    token = strtok(a_str, delim);
+    if(token){
+        untokenize(i);
+        strncpy((char *)tokens[i], token, strlen(token));
+        i++;
+    }
+    else{
+        *token_cnt = 0;
+        return NULL;
+    }
+    
+    /* walk through other tokens */
+    while( token != NULL ) 
+    {
+        token = strtok(NULL, delim);
+        if(token){
+            untokenize(i);
+            strncpy((char *)tokens[i], token, strlen(token));
+            i++;
+            if(i == MAX_CMD_TREE_DEPTH + 1){
+                //cprintf("Warning : Max token limit (= %d) support exceeded\n", MAX_CMD_TREE_DEPTH);
+                re_init_tokens(MAX_CMD_TREE_DEPTH);
+                *token_cnt = 0;
+                return &tokens[0];
+            }
+        }
+    } 
+    *token_cnt = i;
+    return &tokens[0];
+}
+
+void
+string_space_trim(char *string){
+
+    if(!string)
+        return;
+
+    char* ptr = string;
+    int len = strlen(ptr);
+
+    if(!len){
+        return;
+    }
+
+    if(!isspace(ptr[0]) && !isspace(ptr[len-1])){
+        return;
+    }
+
+    while(len-1 > 0 && isspace(ptr[len-1])){
+        ptr[--len] = 0;
+    }
+
+    while(*ptr && isspace(*ptr)){
+        ++ptr, --len;
+    }
+
+    memmove(string, ptr, len + 1);
+}
+
+
+void
+print_tokens(unsigned int index){
+    
+    unsigned int i = 0;
+    for ( ; i < index; i++)
+    {
+        if(tokens[i] == NULL)
+            break;
+
+        printw("%s ", tokens[i]);
+    }
+}
+
+
+int replaceSubstring(char *str,
+                  const char *old_sub,
+                  const char *new_sub,
+                  size_t buf_size)
+{
+    char *pos = strstr(str, old_sub);
+    if (!pos)
+        return 0;   // not found
+
+    size_t old_len = strlen(old_sub);
+    size_t new_len = strlen(new_sub);
+    size_t cur_len = strlen(str);
+
+    /* Check if destination buffer can accommodate growth */
+    if (cur_len - old_len + new_len >= buf_size)
+        return -1;
+
+    if (new_len > old_len) {
+        /* Shift tail right */
+        memmove(pos + new_len,
+                pos + old_len,
+                strlen(pos + old_len) + 1);
+    } else if (new_len < old_len) {
+        /* Shift tail left */
+        memmove(pos + new_len,
+                pos + old_len,
+                strlen(pos + old_len) + 1);
+    }
+
+    memcpy(pos, new_sub, new_len);
+
+    return 1;
+}
+
+
+
+bool
+pattern_match(char string[], int string_size, const char pattern[]) {
+
+    if (string_size == 0) {
+        return false;
+    }
+    return (strstr(string, pattern));
+}
+
+int
+grep (char string[], int string_size, char pattern[]) {
+
+    int rc = 0;
+    char *token;
+
+    if (!string_size) return 0;
+    
+    char *temp_buff = (char *)calloc(1, string_size);
+    
+    memcpy(temp_buff, string, string_size);
+    memset (string, 0, string_size);
+
+    token = strtok(temp_buff, "\n");
+
+    while (token) {
+
+        if (pattern_match(token, strlen(token), pattern)) {
+
+            rc += sprintf(string + rc, "%s\n", token);
+        }
+        token = strtok(NULL, "\n");
+    }
+    free(temp_buff);
+    return rc;
+}
+
+static bool
+is_number (char *string) {
+
+    int i = 0;
+    while (string[i] != '\0') {
+
+        if (string[i] == '0' || 
+             string[i] == '1' ||
+             string[i] == '2' ||
+             string[i] == '3' ||
+             string[i] == '4' ||
+             string[i] == '5' ||
+             string[i] == '6' ||
+             string[i] == '7' ||
+             string[i] == '8' ||
+             string[i] == '9' ) {
+
+                i++;
+                continue;
+             }
+             else {
+                 return false;
+             }
+    }
+    return true;
+}
+
+
+uint64_t
+string_fetch_integer(char *string, int string_size, int index) {
+
+    int count = 0;
+    char *token;
+
+    if (!string_size) return 0;
+
+    char *temp_buff = (char *)calloc(1, string_size);
+    memcpy(temp_buff, string, string_size);
+    
+    token = strtok(temp_buff, " ");
+
+    while (token) {
+
+        if (!is_number(token)) {
+            token = strtok(NULL, " ");
+            continue;
+        }
+
+        count++;
+        if (index == count) {
+            free(temp_buff);
+            return atoi(token);
+        }
+        
+        token = strtok(NULL, " ");
+    }
+    free(temp_buff);
+    return 0;
+}
+
+#define IS_TRIM_CHAR(c) ((c)==' ' || (c)=='\n' || (c)=='\r')
+
+static char* trim(char *str)
+{
+    char *start = str;
+    char *end;
+
+    /* Skip leading whitespace */
+    while (*start && IS_TRIM_CHAR((unsigned char)*start))
+        start++;
+
+    /* All spaces */
+    if (*start == '\0') {
+        *str = '\0';
+        return str;
+    }
+
+    /* Find end of string */
+    end = start + strlen(start) - 1;
+
+    /* Remove trailing whitespace */
+    while (end > start && IS_TRIM_CHAR((unsigned char)*end))
+        end--;
+
+    *(end + 1) = '\0';
+
+    /* Move trimmed string to beginning if needed */
+    if (start != str)
+        memmove(str, start, strlen(start) + 1);
+
+    return str;
+}
+
+void
+string_sanitize_token(char *s)
+{
+    size_t len;
+    char *start;
+
+    if (!s || !*s) {
+        return;
+    }
+
+    start = s;
+    while (*start &&
+           (isspace((unsigned char)*start) || *start == '\b')) {
+        start++;
+    }
+    if (start != s) {
+        memmove(s, start, strlen(start) + 1);
+    }
+
+    len = strlen(s);
+    while (len > 0) {
+        unsigned char c = (unsigned char)s[len - 1];
+
+        if (isspace(c) || c == '\b') {
+            s[--len] = '\0';
+        } else {
+            break;
+        }
+    }
+
+    len = strlen(s);
+    if (len >= 2 && s[len - 2] == '\\' && s[len - 1] == 'b') {
+        s[len - 2] = '\0';
+    }
+}
+
+void 
+string_fetch_string(char *string, int string_size, int index, char *buff_out) {
+
+    int count = 0;
+    char *token;
+    buff_out[0] = '\0';
+    
+    if (!string_size) return;
+
+    char *temp_buff = (char *)calloc(1, string_size);
+    memcpy(temp_buff, string, string_size);
+    
+    token = strtok(temp_buff, " ");
+    trim (token);
+    
+    while (token) {
+
+        count++;
+        if (index == count) {
+            size_t tlen = strlen(token);
+
+            strncpy(buff_out, token, tlen);
+            buff_out[tlen] = '\0';
+            string_sanitize_token(buff_out);
+            free(temp_buff);
+            return;
+        }
+        
+        token = strtok(NULL, " ");
+    }
+    free(temp_buff);
+    return;
+} 
+
+ /* Ignore \n \r \n\r*/
+ bool 
+ ignore_sole_new_line (unsigned char *Obuffer, int msg_len) {
+ 
+     if (msg_len > 2) return false;
+ 
+     if (msg_len == 1) {
+         if (Obuffer[msg_len - 1] == '\n' || 
+             Obuffer[msg_len - 1] == '\r') {
+             return true;
+         }
+     }
+     else if (msg_len == 2) {
+         if (Obuffer[msg_len - 1] == '\n' && 
+             Obuffer[msg_len - 2] == '\r') {
+             return true;
+         }
+         else if (Obuffer[msg_len - 1] == '\r' && 
+             Obuffer[msg_len - 2] == '\n') {
+             return true;
+         }
+     }
+ 
+     return false;
+ }
+ 
+int 
+regex_match (const char *input_string, const char *reg_exp) {
+
+    regex_t regex;
+    int reti;
+
+    /* Compile regular expression */
+    reti = regcomp(&regex, reg_exp, REG_EXTENDED);
+    if (reti) return -1;
+
+    /* Execute regular expression */
+    reti = regexec(&regex, input_string, 0, NULL, 0);
+    regfree(&regex);
+    return reti;
+}
+
+char *
+stringdup (const char *src_string, uint16_t string_len) {
+
+        uint16_t new_string_len = ((string_len + 1 + 7) & ~7); /* 8B align + NUL */
+        char *dup_string = (char *)calloc(1, new_string_len);
+        memcpy(dup_string, src_string, string_len);
+        dup_string[string_len] = '\0';
+        return dup_string;
+}
+
+
+#if 0
+int 
+main(int argc, char **argv) {
+
+    char *sample1 = "LSP : 122.1.1.0          Seq # : 14      size(B) : 95      ref_c : 1     Life Time Remaining : 2372 sec\0";
+    uint64_t int1 = string_fetch_integer(sample1, strlen(sample1), 1);
+    cprintf("%d %u\n", __LINE__, int1);
+    int1 = string_fetch_integer(sample1, strlen(sample1), 2);
+    cprintf("%d %u\n", __LINE__, int1);
+    int1 = string_fetch_integer(sample1, strlen(sample1), 3);
+    cprintf("%d %u\n", __LINE__, int1);
+     int1 = string_fetch_integer(sample1, strlen(sample1), 4);
+    cprintf("%d %u\n", __LINE__, int1);
+    return 0;
+}
+#endif
