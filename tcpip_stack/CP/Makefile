@@ -1,9 +1,13 @@
 LIB     := libcp.a
-SRC     := cp_ctx.cpp
+SRC     := cp_ctx.cpp \
+           LinuxInterface.cpp
+
 OBJ     := $(SRC:.cpp=.o)
 
 CXX     := g++
-CXXFLAGS := -O2 -Wall -Wextra
+PKG_CONFIG ?= pkg-config
+DPDK_CFLAGS := $(shell $(PKG_CONFIG) --cflags libdpdk)
+CXXFLAGS := -O2 -Wall -Wextra $(DPDK_CFLAGS)
 
 AR      := ar
 ARFLAGS := rcs
@@ -15,7 +19,7 @@ all: $(LIB)
 $(LIB): $(OBJ)
 	$(AR) $(ARFLAGS) $@ $^
 
-$(OBJ): $(SRC)
+%.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:
