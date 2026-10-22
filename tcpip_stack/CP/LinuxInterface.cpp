@@ -3,6 +3,14 @@
 #include <cstring>
 #include <cstdlib>
 
+static void 
+NICCreate (uint32_t ifindex, char *if_name, uint8_t *mac_addr) {
+
+   // Instantiate PhysicalInterface( )
+   // Assign ifindex/mac_address/name
+   // Store in CP Interface DBs
+}
+
 void 
 DPDK_LoadInterfaces() {
 
@@ -49,6 +57,8 @@ DPDK_LoadInterfaces() {
                 mac_addr.addr_bytes[4], mac_addr.addr_bytes[5],
                 dev_info.max_rx_queues, dev_info.max_tx_queues,
                 port_numa_node);
+
+        NICCreate (port_id + 1, user_if_name, mac_addr.addr_bytes);
     }
 }
 

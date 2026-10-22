@@ -1,0 +1,14 @@
+#ifndef __INTERFACE_TYPES__
+#define __INTERFACE_TYPES__
+
+enum InterfaceType_t {
+
+    INTF_TYPE_PHY,
+    INTF_TYPE_VLAN,
+    INTF_TYPE_LOOPBACK,
+    INTF_TYPE_RMAC,
+    INTF_TYPE_VLAN_FLOOD,
+    INTF_TYPE_UNKNOWN
+};
+
+#endif // __INTERFACE_TYPES__

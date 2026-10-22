@@ -1,6 +1,8 @@
 LIB     := libcp.a
 SRC     := cp_ctx.cpp \
-           LinuxInterface.cpp
+           LinuxInterface.cpp \
+		   Interface/Interface.cpp \
+		   Interface/InterfaceApi.cpp 
 
 OBJ     := $(SRC:.cpp=.o)
 
