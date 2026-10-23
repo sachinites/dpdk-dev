@@ -81,7 +81,7 @@ ut_parser_init ( ) {
 
     struct mq_attr attr;
 
-    ut_log_file = fopen("CLIBuilder/utinfra/ut_log_file.txt", "w");
+    ut_log_file = fopen("MgmtPlane/CLIBuilder/utinfra/ut_log_file.txt", "w");
     assert(ut_log_file);
 
     /* Initialize buffers to prevent binary data */
