@@ -1549,7 +1549,7 @@ cmdtc_set_filter_context (cmd_tree_cursor_t *cmdtc) {
 
 
 #define SCHED_SUBMISSION
-//#undef SCHED_SUBMISSION
+#undef SCHED_SUBMISSION
 
 #ifdef SCHED_SUBMISSION
 extern void
@@ -1736,11 +1736,28 @@ cmd_tree_trigger_cli (cmd_tree_cursor_t *cli_cmdtc) {
                     break;
                 }
 
-                while (j < CALLBACKS_N && param->callback[j]) {
-                    task_invoke_appln_cbk_handler(param->CMDCODE, param->callback[j++], 
-                        cmdtc->tlv_stack, enable_or_disable, 
-                        libcli_get_user_flag(param));
+#ifndef SCHED_SUBMISSION
+                if (param->callback[0](param->CMDCODE, cmdtc->tlv_stack, enable_or_disable))
+                {
+                    cli_cmdtc->success = false;
                 }
+#else
+                if (param->flags & PARAM_F_INBUILD_CMD)
+                {
+                    if (param->callback[0](param->CMDCODE, cmdtc->tlv_stack, enable_or_disable))
+                    {
+                        cli_cmdtc->success = false;
+                    }
+                }
+                else
+                {
+                    while (j < CALLBACKS_N && param->callback[j]) {
+                        task_invoke_appln_cbk_handler(param->CMDCODE, param->callback[j++], 
+                            cmdtc->tlv_stack, enable_or_disable, 
+                            libcli_get_user_flag(param));
+                    }
+                }
+#endif
 
                 if (temp_cmdtc)
                 {

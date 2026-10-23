@@ -23,7 +23,7 @@ CXXFLAGS := -O2 -Wall -Wextra -I$(CP_DIR) -I$(DP_DIR) -I$(CLI_DIR) -I$(LIBS_DIR)
 all: $(APP)
 
 $(APP): $(OBJ) $(LIBCP) $(LIBDP) $(LIBCLI) $(LIBSTD)
-	$(CXX) $(OBJ) $(LIBCP) $(LIBDP) $(LIBCLI) $(LIBSTD) -o $@ $(DPDK_LIBS)
+	$(CXX) $(OBJ) $(LIBCP) $(LIBDP) $(LIBCLI) $(LIBSTD) -o $@ $(DPDK_LIBS) -lncurses
 
 $(OBJ): $(SRC)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
