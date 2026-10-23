@@ -2,7 +2,9 @@ LIB     := libcp.a
 SRC     := cp_ctx.cpp \
            LinuxInterface.cpp \
 		   Interface/Interface.cpp \
-		   Interface/InterfaceApi.cpp 
+		   Interface/InterfaceApi.cpp \
+		   Interface/InterfaceCli.cpp \
+		   nwcli.cpp 
 
 OBJ     := $(SRC:.cpp=.o)
 
