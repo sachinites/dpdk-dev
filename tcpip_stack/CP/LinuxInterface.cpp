@@ -2,13 +2,25 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <memory>
+
+#include "cp_ctx.h"
+#include "Interface/Interface.h"
+
+extern cp_ctx_t cp_ctx;
 
 static void 
 NICCreate (uint32_t ifindex, char *if_name, uint8_t *mac_addr) {
 
-   // Instantiate PhysicalInterface( )
-   // Assign ifindex/mac_address/name
-   // Store in CP Interface DBs
+   uint8_t mac[6];
+   memcpy(mac, mac_addr, sizeof(mac));
+
+   /* name + INTF_TYPE_PHY via PhysicalInterface ctor; MAC copied in */
+   auto phy_intf = std::make_shared<PhysicalInterface>(if_name, &mac);
+   phy_intf->ifindex = ifindex;
+
+   (*cp_ctx.intf_by_name)[phy_intf->if_name] = phy_intf;
+   (*cp_ctx.intf_by_ifindex)[ifindex] = phy_intf;
 }
 
 void 
