@@ -8,6 +8,7 @@
 #include "Interface/Interface.h"
 
 extern cp_ctx_t cp_ctx;
+extern int cprintf (const char* format, ...) ;
 
 static void 
 NICCreate (uint32_t ifindex, char *if_name, uint8_t *mac_addr) {
@@ -60,7 +61,7 @@ DPDK_LoadInterfaces() {
             exist anymore. We have to cook our own interface names */
         snprintf (user_if_name, sizeof (user_if_name), "eth%u", port_id);
 
-        printf("port_id = %u, if_name = %s, pci_bdf = %s, driver = %s, "
+        cprintf("port_id = %u, if_name = %s, pci_bdf = %s, driver = %s, "
                 "mac = %02x:%02x:%02x:%02x:%02x:%02x, "
                 "max_rx_q = %u, max_tx_q = %u, NUMA node = %u\n",
                 port_id, user_if_name, name, dev_info.driver_name,

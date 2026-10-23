@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstring>
+extern int cprintf (const char* format, ...) ;
 
 Interface::Interface(std::string if_name, InterfaceType_t iftype)
     : if_name(std::move(if_name)),
@@ -22,7 +23,7 @@ Interface::~Interface() {
 void
 Interface::PrintInterfaceDetails()
 {
-    printf("if_name=%s ifindex=%u iftype=%d is_up=%d\n",
+    cprintf("if_name=%s ifindex=%u iftype=%d is_up=%d\n",
            if_name.c_str(), ifindex, static_cast<int>(iftype), is_up);
 }
 

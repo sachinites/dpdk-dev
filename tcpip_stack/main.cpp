@@ -23,7 +23,7 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    printf("DPDK EAL initialized\n");
+    cprintf("DPDK EAL initialized\n");
 
     libcli_init ();
     std_lib_init(cprintf);
