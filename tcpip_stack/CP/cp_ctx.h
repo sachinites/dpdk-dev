@@ -6,6 +6,8 @@
 #include <string>
 #include "Interface/InterfaceFwd.h"
 
+typedef struct ll_event_dispatcher_ ll_event_dispatcher_t;
+
 typedef struct cp_ctx_ {
 
     /* Give some Name to this NW Dev*/
@@ -19,6 +21,9 @@ typedef struct cp_ctx_ {
 
      /* Interface Store , ifindex as a key */
     std::unordered_map<uint32_t, InterfaceP> *intf_by_ifindex;    
+
+    /* CP Mgmt Event Loop (EventDispatcher )*/
+    ll_event_dispatcher_t *cp_ev_dis;
 
 } cp_ctx_t;
 

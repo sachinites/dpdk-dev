@@ -20,6 +20,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <cstddef>
 
 /* Max packets one pkt_q can hold. Enqueue beyond this fails and increments
  * the drop counter. */

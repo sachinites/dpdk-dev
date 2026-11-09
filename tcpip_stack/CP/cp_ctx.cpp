@@ -1,6 +1,7 @@
-#include "cp_ctx.h"
-
 #include <cstring>
+
+#include "cp_ctx.h"
+#include "../libs/EventDispatcher/PubLockLessEvDis.h"
 
 void 
 init_cp_ctx(cp_ctx_t *cp_ctx, const char *dev_name)
@@ -10,4 +11,5 @@ init_cp_ctx(cp_ctx_t *cp_ctx, const char *dev_name)
     cp_ctx->dev_id = 0;
     cp_ctx->intf_by_name = new std::unordered_map<std::string, InterfaceP>();
     cp_ctx->intf_by_ifindex = new std::unordered_map<uint32_t, InterfaceP>();
+    cp_ctx->cp_ev_dis = ll_event_dispatcher_create("CP_EV_DIS", 0);
 }
