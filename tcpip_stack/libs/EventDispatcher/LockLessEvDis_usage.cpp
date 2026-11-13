@@ -35,18 +35,21 @@ app_msg_free(void *p) {
 static void
 pkt_q_callback(ll_event_dispatcher_t *ev_dis, void *arg, uint32_t arg_size) {
 
-    (void)arg_size;
-    ll_pkt_q_t *pkt_q = (ll_pkt_q_t *)arg;
+    ll_pkt_q_t *pkt_q = ll_eve_dis_get_current_pkt_q(ev_dis);
     uint32_t pkt_size;
     char *raw;
+    app_msg_t *msg;
+
+    if (arg) {
+        msg = (app_msg_t *)arg;
+        printf("[dispatcher] pkt_q=%p  msg id=%d text=\"%s\" (%u bytes)\n",
+               (void *)pkt_q, msg->id, msg->text, arg_size);
+    }
 
     while ((raw = ll_task_get_next_pkt(ev_dis, &pkt_size)) != NULL) {
-
-        app_msg_t *msg = (app_msg_t *)raw;
+        msg = (app_msg_t *)raw;
         printf("[dispatcher] pkt_q=%p  msg id=%d text=\"%s\" (%u bytes)\n",
                (void *)pkt_q, msg->id, msg->text, pkt_size);
-
-        free(msg);
 
         if (ll_event_dispatcher_should_suspend(ev_dis)) {
             printf("[dispatcher] yielding (preempt interval)\n");

@@ -10,6 +10,7 @@
  *       Run     :  ./ll_ev_dis_test.exe              (all demos, scale=1)
  *                  ./ll_ev_dis_test.exe 3            (only demo 3)
  *                  ./ll_ev_dis_test.exe 0 4          (all demos, scale=4)
+ *                  ./ll_ev_dis_test.exe 12           (primed arg / auto-free)
  *
  * =====================================================================================
  */
@@ -294,8 +295,8 @@ static std::vector<ll_pkt_q_t *> d3_q;
 static void
 d3_cbk(ll_event_dispatcher_t *ev_dis, void *arg, uint32_t arg_size) {
 
-    (void)arg_size;
-    ll_pkt_q_t *pkt_q = (ll_pkt_q_t *)arg;
+    (void)arg; (void)arg_size;
+    ll_pkt_q_t *pkt_q = ll_eve_dis_get_current_pkt_q(ev_dis);
     int qid = index_of(pkt_q, d3_q.data(), d3_n_queues);
     uint32_t prod_id;
     char *pkt;
@@ -497,23 +498,25 @@ demo4_wait_signal(void) {
 /* ====================================================================== */
 
 static std::atomic<uint64_t> d5_consumed(0);
-static std::atomic<uint64_t> d5_freed_by_deinit(0);
+static std::atomic<uint64_t> d5_freed_total(0);
 
 static void
 d5_free(void *p) {
 
     free(p);
-    d5_freed_by_deinit++;
+    d5_freed_total++;
 }
 
 static void
 d5_cbk(ll_event_dispatcher_t *ev_dis, void *arg, uint32_t arg_size) {
 
-    (void)arg; (void)arg_size;
+    (void)arg_size;
     uint32_t sz;
     char *pkt;
-    for (int budget = 16; budget && (pkt = ll_task_get_next_pkt(ev_dis, &sz)); budget--) {
-        free(pkt);
+    if (arg) {
+        d5_consumed++;
+    }
+    for (int budget = 15; budget && (pkt = ll_task_get_next_pkt(ev_dis, &sz)); budget--) {
         d5_consumed++;
         usleep(1);
     }
@@ -532,7 +535,7 @@ demo5_delete_under_load(void) {
     std::atomic<bool> stop_prod(false);
 
     d5_consumed = 0;
-    d5_freed_by_deinit = 0;
+    d5_freed_total = 0;
 
     ll_event_dispatcher_t *ev_dis = ll_event_dispatcher_create("demo5");
     CHECK(ev_dis, "create");
@@ -566,13 +569,19 @@ demo5_delete_under_load(void) {
 
     for (auto &t : producers) t.join();
 
+    uint64_t not_consumed =
+        accepted.load() > d5_consumed.load() ?
+        accepted.load() - d5_consumed.load() : 0;
+
     printf("    accepted by enqueue    : %lu\n", (unsigned long)accepted.load());
     printf("    consumed by callback   : %lu\n", (unsigned long)d5_consumed.load());
-    printf("    freed by destroy       : %lu\n", (unsigned long)d5_freed_by_deinit.load());
-    CHECK(accepted.load() == d5_consumed.load() + d5_freed_by_deinit.load(),
-          "packet leak or double free");
+    printf("    freed (total)          : %lu\n", (unsigned long)d5_freed_total.load());
+    printf("    never in callback      : ~%lu\n", (unsigned long)not_consumed);
+    CHECK(accepted.load() == d5_freed_total.load(),
+          "packet leak or double free (accepted %lu freed %lu)",
+          (unsigned long)accepted.load(), (unsigned long)d5_freed_total.load());
     CHECK(accepted.load() > 0, "no packets accepted");
-    CHECK(d5_freed_by_deinit.load() > 0 || queued_at_delete == 0,
+    CHECK(not_consumed > 0 || queued_at_delete == 0,
           "expected some leftovers freed by destroy under slow consumer");
 
     ll_pkt_q_free(q);
@@ -596,8 +605,8 @@ static std::atomic<bool> d6_blk_rel(false);
 static void
 d6_cbk(ll_event_dispatcher_t *ev_dis, void *arg, uint32_t arg_size) {
 
-    (void)arg_size;
-    ll_pkt_q_t *pkt_q = (ll_pkt_q_t *)arg;
+    (void)arg; (void)arg_size;
+    ll_pkt_q_t *pkt_q = ll_eve_dis_get_current_pkt_q(ev_dis);
     int qid = index_of(pkt_q, d6_qs.data(), (int)d6_qs.size());
     d6_service_order.push_back(qid);
     uint32_t sz;
@@ -924,12 +933,15 @@ static void
 d10_cbk(ll_event_dispatcher_t *ev_dis, void *arg, uint32_t arg_size) {
 
     (void)arg_size;
-    ll_pkt_q_t *pkt_q = (ll_pkt_q_t *)arg;
+    ll_pkt_q_t *pkt_q = ll_eve_dis_get_current_pkt_q(ev_dis);
     uint32_t sz;
     char *pkt;
     int budget = 32;
+    if (arg) {
+        d10_consumed++;
+        budget--;
+    }
     while (budget-- && (pkt = ll_task_get_next_pkt(ev_dis, &sz))) {
-        free(pkt);
         d10_consumed++;
     }
     if (d10_consumed.load() >= (uint64_t)scaled(1000) && !d10_deleted.exchange(true)) {
@@ -984,12 +996,13 @@ demo10_self_delete(void) {
 
     usleep(50 * 1000);
 
-    printf("    accepted=%lu consumed=%lu freed_by_destroy=%lu\n",
+    printf("    accepted=%lu consumed=%lu freed_total=%lu\n",
            (unsigned long)accepted.load(),
            (unsigned long)d10_consumed.load(),
            (unsigned long)d10_freed.load());
-    CHECK(accepted.load() == d10_consumed.load() + d10_freed.load(),
-          "leak/double-free on self-delete");
+    CHECK(accepted.load() == d10_freed.load(),
+          "leak/double-free on self-delete (accepted %lu freed %lu)",
+          (unsigned long)accepted.load(), (unsigned long)d10_freed.load());
     CHECK(d10_deleted.load(), "delete flag");
     CHECK(ev_dis->n_pkt_q == 0, "pkt_q still registered");
 
@@ -1063,6 +1076,210 @@ demo11_passive_queue(void) {
 }
 
 /* ====================================================================== */
+/* Demo 12 : Pre-dequeued arg; optional get_next; auto-free (no spin)     */
+/* ====================================================================== */
+
+static std::atomic<uint64_t> d12_arg_consumed(0);
+static std::atomic<uint64_t> d12_auto_freed(0);
+static std::atomic<uint64_t> d12_manual_freed(0);
+static std::atomic<uint64_t> d12_first_pull_ok(0);
+static std::atomic<uint64_t> d12_pull_pkts(0);
+
+static void
+d12_track_free(void *p) {
+
+    free(p);
+    d12_auto_freed++;
+}
+
+static void
+d12_arg_only_cbk(ll_event_dispatcher_t *ev_dis, void *arg, uint32_t arg_size) {
+
+    (void)ev_dis;
+    (void)arg_size;
+    if (arg) {
+        d12_arg_consumed++;
+        /* No ll_task_get_next_pkt(); no free() — dispatcher uses free_fn. */
+    }
+}
+
+static void
+d12_noop_cbk(ll_event_dispatcher_t *ev_dis, void *arg, uint32_t arg_size) {
+
+    (void)ev_dis;
+    (void)arg;
+    (void)arg_size;
+    /* Stub handler: packet already removed from ring before this runs. */
+}
+
+static void
+d12_manual_free_cbk(ll_event_dispatcher_t *ev_dis, void *arg, uint32_t arg_size) {
+
+    (void)ev_dis;
+    (void)arg_size;
+    if (arg) {
+        d12_manual_freed++;
+        free(arg);
+    }
+}
+
+static void
+d12_get_next_matches_arg_cbk(ll_event_dispatcher_t *ev_dis,
+                             void *arg, uint32_t arg_size) {
+
+    uint32_t pull_size;
+    char *pull_pkt;
+
+    if (!arg) {
+        return;
+    }
+
+    pull_pkt = ll_task_get_next_pkt(ev_dis, &pull_size);
+    CHECK(pull_pkt == arg,
+          "first get_next (%p) must match primed arg (%p)", (void *)pull_pkt, arg);
+    CHECK(pull_size == arg_size,
+          "get_next size %u vs arg size %u", pull_size, arg_size);
+
+    d12_first_pull_ok++;
+    d12_pull_pkts++;
+
+    while ((pull_pkt = ll_task_get_next_pkt(ev_dis, &pull_size)) != NULL) {
+        d12_pull_pkts++;
+    }
+}
+
+static void
+demo12_primed_arg_autofree(void) {
+
+    const int n_pkts = scaled(500);
+
+    printf("\n=== Demo 12 : Primed arg + auto-free (no mandatory drain) ===\n");
+
+    d12_arg_consumed = 0;
+    d12_auto_freed = 0;
+
+    ll_event_dispatcher_t *ev_dis = ll_event_dispatcher_create("demo12");
+    CHECK(ev_dis, "create");
+
+    ll_pkt_q_t *q = ll_pkt_q_create(ev_dis, d12_arg_only_cbk,
+                                    LL_TASK_PRIORITY_HIGH, d12_track_free);
+    CHECK(q, "q");
+    ll_event_dispatcher_run(ev_dis);
+
+    for (int i = 0; i < n_pkts; i++) {
+        char *pkt = (char *)malloc(16);
+        CHECK(pkt, "malloc");
+        snprintf(pkt, 16, "id=%d", i);
+        while (!ll_pkt_q_enqueue(ev_dis, q, pkt, 16)) {
+            sched_yield();
+        }
+    }
+
+    CHECK(wait_for(d12_arg_consumed, (uint64_t)n_pkts, 15.0),
+          "arg consumed %lu / %d",
+          (unsigned long)d12_arg_consumed.load(), n_pkts);
+    CHECK(wait_for(d12_auto_freed, (uint64_t)n_pkts, 15.0),
+          "auto-freed %lu / %d",
+          (unsigned long)d12_auto_freed.load(), n_pkts);
+    CHECK(ll_pkt_q_count(q) == 0, "packets still queued");
+    CHECK(q->deq_count == (uint64_t)n_pkts, "deq_count %lu",
+          (unsigned long)q->deq_count);
+
+    /* Without draining in the callback, the ring must still empty and the
+     * dispatcher must not spin (old bug: infinite re-schedule). */
+    CHECK(ev_dis->n_task_exec >= (uint64_t)n_pkts,
+          "too few callbacks %lu", (unsigned long)ev_dis->n_task_exec);
+    CHECK(ev_dis->n_task_exec <= (uint64_t)n_pkts + (uint64_t)scaled(16),
+          "spin? n_task_exec=%lu for %d pkts",
+          (unsigned long)ev_dis->n_task_exec, n_pkts);
+
+    /* Empty stub callback + registered free_fn still releases primed arg. */
+    pkt_q_destroy_free(q);
+    d12_auto_freed = 0;
+
+    q = ll_pkt_q_create(ev_dis, d12_noop_cbk,
+                        LL_TASK_PRIORITY_HIGH, d12_track_free);
+    CHECK(q, "noop q");
+
+    const int n_noop = scaled(100);
+    for (int i = 0; i < n_noop; i++) {
+        char *pkt = (char *)malloc(8);
+        CHECK(pkt, "malloc");
+        while (!ll_pkt_q_enqueue(ev_dis, q, pkt, 8)) {
+            sched_yield();
+        }
+    }
+
+    CHECK(wait_for(d12_auto_freed, (uint64_t)n_noop, 10.0),
+          "noop auto-freed %lu / %d",
+          (unsigned long)d12_auto_freed.load(), n_noop);
+    CHECK(ll_pkt_q_count(q) == 0, "noop path left queued pkts");
+
+    pkt_q_destroy_free(q);
+
+    /* No free_fn: application must free the primed arg itself. */
+    d12_manual_freed = 0;
+    q = ll_pkt_q_create(ev_dis, d12_manual_free_cbk,
+                        LL_TASK_PRIORITY_HIGH, NULL);
+    CHECK(q, "manual q");
+
+    const int n_manual = scaled(50);
+    for (int i = 0; i < n_manual; i++) {
+        char *pkt = (char *)malloc(8);
+        CHECK(pkt, "malloc");
+        while (!ll_pkt_q_enqueue(ev_dis, q, pkt, 8)) {
+            sched_yield();
+        }
+    }
+
+    CHECK(wait_for(d12_manual_freed, (uint64_t)n_manual, 10.0),
+          "manual free %lu / %d",
+          (unsigned long)d12_manual_freed.load(), n_manual);
+    CHECK(ll_pkt_q_count(q) == 0, "manual path left queued pkts");
+
+    pkt_q_destroy_free(q);
+
+    /* First optional get_next must return the same payload as arg2. */
+    d12_first_pull_ok = 0;
+    d12_arg_consumed = 0;
+    d12_pull_pkts = 0;
+    d12_auto_freed = 0;
+
+    q = ll_pkt_q_create(ev_dis, d12_get_next_matches_arg_cbk,
+                        LL_TASK_PRIORITY_HIGH, d12_track_free);
+    CHECK(q, "pull q");
+
+    const int n_pull = scaled(32);
+    const int extra = scaled(8);
+    const int n_pull_total = n_pull + extra;
+
+    for (int i = 0; i < n_pull_total; i++) {
+        char *pkt = (char *)malloc(16);
+        CHECK(pkt, "malloc");
+        snprintf(pkt, 16, "pull=%d", i);
+        while (!ll_pkt_q_enqueue(ev_dis, q, pkt, 16)) {
+            sched_yield();
+        }
+    }
+
+    CHECK(wait_for(d12_pull_pkts, (uint64_t)n_pull_total, 15.0),
+          "pull pkts %lu / %d",
+          (unsigned long)d12_pull_pkts.load(), n_pull_total);
+    CHECK(wait_for(d12_auto_freed, (uint64_t)n_pull_total, 15.0),
+          "pull path auto-free %lu / %d",
+          (unsigned long)d12_auto_freed.load(), n_pull_total);
+    CHECK(d12_first_pull_ok.load() > 0,
+          "pull/arg identity cbk never ran");
+    CHECK(d12_first_pull_ok.load() <= (uint64_t)n_pull_total,
+          "first_pull_ok %lu", (unsigned long)d12_first_pull_ok.load());
+    CHECK(ll_pkt_q_count(q) == 0, "pull path left queued pkts");
+
+    pkt_q_destroy_free(q);
+    ll_event_dispatcher_destroy(ev_dis);
+    printf("    PASS\n");
+}
+
+/* ====================================================================== */
 
 int
 main(int argc, char **argv) {
@@ -1086,6 +1303,7 @@ main(int argc, char **argv) {
     if (!only || only == 9)  demo9_many_queues();
     if (!only || only == 10) demo10_self_delete();
     if (!only || only == 11) demo11_passive_queue();
+    if (!only || only == 12) demo12_primed_arg_autofree();
 
     printf("\nAll requested demos passed (scale=%d).\n", g_scale);
     return 0;

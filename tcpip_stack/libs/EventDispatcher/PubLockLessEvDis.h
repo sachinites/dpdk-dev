@@ -41,10 +41,15 @@ typedef struct ll_pkt_q_ ll_pkt_q_t;
 
 /*
  * Application callback for a ready pkt_q. Runs only on the dispatcher thread.
+ * Before this is invoked the dispatcher dequeues one packet from the pkt_q.
  *   arg1 : dispatcher
- *   arg2 : the ll_pkt_q_t * that became ready
- *   arg3 : opaque size token (API parity with the original event dispatcher)
- * Drain packets with ll_task_get_next_pkt() until NULL or should_suspend().
+ *   arg2 : that packet's payload (NULL if the queue was empty when scheduled)
+ *   arg3 : payload size in bytes
+ * Use ll_eve_dis_get_current_pkt_q() for the pkt_q handle.
+ * Additional packets may be pulled with ll_task_get_next_pkt() (optional).
+ * When free_fn was passed to ll_pkt_q_create(), the dispatcher frees every
+ * packet handed to the callback after it returns; the application must not
+ * free them. Without free_fn, the application owns and must free them.
  */
 typedef void (*ll_event_cbk)(ll_event_dispatcher_t *, void *, uint32_t);
 
@@ -182,7 +187,10 @@ ll_pkt_q_enqueue(ll_event_dispatcher_t *ev_dis,
 /*
  * CONSUMER API: next packet of the pkt_q currently being served.
  * Call only from inside that pkt_q's callback (dispatcher thread).
- * Returns NULL when the queue is empty. Writes size into *pkt_size if non-NULL.
+ * The first successful call returns the same packet already passed as arg2 to
+ * this callback (if any); later calls dequeue additional buffered packets.
+ * Returns NULL when no more packets are buffered. Writes size into *pkt_size
+ * if non-NULL.
  */
 char *
 ll_task_get_next_pkt(ll_event_dispatcher_t *ev_dis, uint32_t *pkt_size);

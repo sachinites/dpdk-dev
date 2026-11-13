@@ -17,6 +17,7 @@
 #include <pthread.h>
 #include <sys/time.h>
 #include <atomic>
+#include <vector>
 
 #include "PubLockLessEvDis.h"
 
@@ -95,6 +96,11 @@ struct ll_event_dispatcher_ {
     ll_pkt_q_t *current_pkt_q;
     struct timeval current_task_start_time;
     uint64_t n_task_exec;
+
+    /* Set only while a pkt_q callback is running (dispatcher thread). */
+    bool cbk_has_primed_pkt;
+    ll_pkt_elem_t cbk_primed_pkt;
+    std::vector<char *> cbk_handoffs;
 
     void *app_data;
 };

@@ -25,7 +25,7 @@ all: $(APP)
 $(APP): $(OBJ) $(LIBCP) $(LIBDP) $(LIBCLI) $(LIBSTD)
 	$(CXX) $(OBJ) $(LIBCP) $(LIBDP) $(LIBCLI) $(LIBSTD) -o $@ $(DPDK_LIBS) -lncurses
 
-$(OBJ): $(SRC)
+%.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(LIBCP):
@@ -46,3 +46,4 @@ clean:
 	$(MAKE) -C $(DP_DIR) clean
 	$(MAKE) -C $(CLI_DIR) clean
 	$(MAKE) -C $(LIBS_DIR) clean
+	rm -f dpal/*.o

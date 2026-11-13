@@ -1,9 +1,11 @@
 LIB     := libdp.a
-SRC     := dp_ctx.cpp
+SRC     := dp_ctx.cpp \
+           dp-program/dp_prog_api.cpp \
+           ../dpal/cp2dp.cpp
 OBJ     := $(SRC:.cpp=.o)
 
 CXX     := g++
-CXXFLAGS := -O2 -Wall -Wextra
+CXXFLAGS := -O2 -Wall -Wextra -I. -I../libs
 
 AR      := ar
 ARFLAGS := rcs
@@ -15,7 +17,7 @@ all: $(LIB)
 $(LIB): $(OBJ)
 	$(AR) $(ARFLAGS) $@ $^
 
-$(OBJ): $(SRC)
+%.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:

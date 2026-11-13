@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <cstdlib>
+#include <unistd.h>
 
 #include <rte_eal.h>
 #include "MgmtPlane/CLIBuilder/libcli.h"
@@ -36,6 +37,10 @@ int main(int argc, char *argv[])
         entries in the dataplane, so data plane should be ready first*/
     init_dp_ctx(&dp_ctx, "DP");
     init_cp_ctx(&cp_ctx, "CP");
+
+    /* Let the DP event dispatcher thread start 
+        before CP starts sending messages */
+    sleep(1); 
 
     /* Let DPDK Scan the NIC of the system and create Control plane
         and Data plane representation of the interfaces */

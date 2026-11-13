@@ -262,6 +262,28 @@ ll_event_dispatcher_get_next_pkt_q_to_run(ll_event_dispatcher_t *ev_dis) {
  * in the original: if packets remain, re-schedule the pkt_q at the TAIL of
  * its priority (round robin with other pkt_qs of the same priority).
  */
+/*
+ * After the application callback returns: release any packet handed to it
+ * (primed arg and/or ll_task_get_next_pkt pulls). When free_cbk was supplied
+ * at ll_pkt_q_create(), the dispatcher frees those payloads here; otherwise
+ * the application must have freed them inside the callback.
+ */
+static void
+ll_eve_dis_finish_callback_pkts(ll_event_dispatcher_t *ev_dis, ll_pkt_q_t *pkt_q)
+{
+    if (ev_dis->cbk_has_primed_pkt) {
+        ev_dis->cbk_handoffs.push_back(ev_dis->cbk_primed_pkt.pkt);
+        ev_dis->cbk_has_primed_pkt = false;
+    }
+
+    if (pkt_q && pkt_q->free_cbk) {
+        for (char *p : ev_dis->cbk_handoffs) {
+            if (p) pkt_q->free_cbk(p);
+        }
+    }
+    ev_dis->cbk_handoffs.clear();
+}
+
 static void
 ll_eve_dis_process_pkt_q_post_call(ll_event_dispatcher_t *ev_dis, ll_pkt_q_t *pkt_q) {
 
@@ -374,10 +396,24 @@ ll_event_dispatcher_thread(void *arg) {
 
         LL_TRACE("%s : invoking callback of pkt_q %p", ev_dis->name, (void *)pkt_q);
 
-        /* Run the application callback. It drains packets using
-         * ll_task_get_next_pkt() until NULL or until should_suspend(). */
-        pkt_q->cbk(ev_dis, (void *)pkt_q, sizeof(*pkt_q));
+        ev_dis->cbk_handoffs.clear();
+        ev_dis->cbk_has_primed_pkt = false;
+
+        if (rte_ring_dequeue_elem(pkt_q->ring, &ev_dis->cbk_primed_pkt,
+                                  sizeof(ev_dis->cbk_primed_pkt)) == 0) {
+            pkt_q->deq_count++;
+            ev_dis->cbk_has_primed_pkt = true;
+        }
+
+        void *cbk_pkt = ev_dis->cbk_has_primed_pkt ?
+                        (void *)ev_dis->cbk_primed_pkt.pkt : NULL;
+        uint32_t cbk_pkt_size = ev_dis->cbk_has_primed_pkt ?
+                                ev_dis->cbk_primed_pkt.pkt_size : 0;
+
+        pkt_q->cbk(ev_dis, cbk_pkt, cbk_pkt_size);
         ev_dis->n_task_exec++;
+
+        ll_eve_dis_finish_callback_pkts(ev_dis, pkt_q);
 
         /* current_pkt_q is NULL if the callback de-initialized its own pkt_q;
          * the pkt_q memory may already be gone, so do not touch it. */
@@ -769,12 +805,21 @@ ll_task_get_next_pkt(ll_event_dispatcher_t *ev_dis, uint32_t *pkt_size) {
 
     if (!pkt_q) return NULL;
 
+    if (ev_dis->cbk_has_primed_pkt) {
+        if (pkt_size) *pkt_size = ev_dis->cbk_primed_pkt.pkt_size;
+        char *pkt = ev_dis->cbk_primed_pkt.pkt;
+        ev_dis->cbk_handoffs.push_back(pkt);
+        ev_dis->cbk_has_primed_pkt = false;
+        return pkt;
+    }
+
     /* O(1), single-consumer dequeue: no atomic RMW needed at all. */
     if (rte_ring_dequeue_elem(pkt_q->ring, &elem, sizeof(elem)) != 0) {
         return NULL;
     }
 
     pkt_q->deq_count++;
+    ev_dis->cbk_handoffs.push_back(elem.pkt);
     if (pkt_size) *pkt_size = elem.pkt_size;
     return elem.pkt;
 }

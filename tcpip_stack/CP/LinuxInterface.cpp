@@ -6,6 +6,7 @@
 
 #include "cp_ctx.h"
 #include "Interface/Interface.h"
+#include "../dpal/cp2dp.h"
 
 extern cp_ctx_t cp_ctx;
 extern int cprintf (const char* format, ...) ;
@@ -22,6 +23,8 @@ NICCreate (uint32_t ifindex, char *if_name, uint8_t *mac_addr) {
 
    (*cp_ctx.intf_by_name)[phy_intf->if_name] = phy_intf;
    (*cp_ctx.intf_by_ifindex)[ifindex] = phy_intf;
+
+   cp2dp_interface_create(*phy_intf);
 }
 
 void 
