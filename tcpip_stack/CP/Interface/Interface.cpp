@@ -22,6 +22,7 @@ Interface::Interface(std::string if_name, InterfaceType_t iftype)
 
 Interface::~Interface() {
     
+    bitmap_unset_bit_at(&cp_ctx.if_index_bm, ifindex);
 }
 
 void
@@ -75,20 +76,10 @@ PhysicalInterface::GetMacAddr()
 LoopbackInterface::LoopbackInterface(std::string ifname)
     : Interface(ifname, INTF_TYPE_LOOPBACK)
 {
-    this->if_name = std::move(ifname);
-    this->ifindex = UINT32_MAX; /* not allocated yet */
-    this->pkt_recv = 0;
-    this->pkt_sent = 0;
-    this->xmit_pkt_dropped = 0;
-    this->recvd_pkt_dropped = 0;
-    this->is_up = true;
-    this->iftype = INTF_TYPE_LOOPBACK;
+
 }
 
 LoopbackInterface::~LoopbackInterface()
 {
-    if (ifindex != UINT32_MAX) {
-        bitmap_unset_bit_at(&cp_ctx.if_index_bm, (uint16_t)ifindex);
-        ifindex = UINT32_MAX;
-    }
+
 }

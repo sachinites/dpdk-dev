@@ -11,16 +11,10 @@ class Interface {
         Interface(std::string if_name, InterfaceType_t iftype);
 
     public:
-        std::string if_name;
-    
-        uint32_t ifindex;
-        uint32_t pkt_recv;
-        uint32_t pkt_sent;
-        uint32_t xmit_pkt_dropped;
-        uint32_t recvd_pkt_dropped;
-        
-        bool is_up;
-        InterfaceType_t iftype;
+        alignas(8) std::string if_name;
+        alignas(8) uint32_t ifindex;
+        alignas(8) InterfaceType_t iftype;
+        alignas(8) bool is_up;
        
         virtual ~Interface();
        
@@ -36,7 +30,7 @@ class PhysicalInterface : public Interface {
 
     private:
         /* L2 Properties */
-        uint8_t mac_add[6];
+        alignas(8) uint8_t mac_add[6];
 
     protected:
     public:
@@ -52,7 +46,7 @@ class PhysicalInterface : public Interface {
 class LoopbackInterface : public Interface {
 
     public:
-        explicit LoopbackInterface(std::string ifname);
+        LoopbackInterface(std::string ifname);
         virtual ~LoopbackInterface();
 
 } __attribute__((aligned(8)));
