@@ -11,10 +11,6 @@ extern int cprintf (const char* format, ...) ;
 Interface::Interface(std::string if_name, InterfaceType_t iftype)
     : if_name(std::move(if_name)),
       ifindex(0),
-      pkt_recv(0),
-      pkt_sent(0),
-      xmit_pkt_dropped(0),
-      recvd_pkt_dropped(0),
       is_up(false),
       iftype(iftype)
 {
