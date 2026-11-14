@@ -1,7 +1,7 @@
 LIB     := libdp.a
 SRC     := dp_ctx.cpp \
            dp-program/dp_prog_api.cpp \
-           ../dpal/cp2dp.cpp
+           Interface/dp_intf_store.cpp
 OBJ     := $(SRC:.cpp=.o)
 
 CXX     := g++

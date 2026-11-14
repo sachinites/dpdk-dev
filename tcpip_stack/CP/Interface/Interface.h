@@ -47,3 +47,12 @@ class PhysicalInterface : public Interface {
         virtual uint8_t* GetMacAddr( ) final;
 
 } __attribute__((aligned(8)));
+
+/* ************ */
+class LoopbackInterface : public Interface {
+
+    public:
+        explicit LoopbackInterface(std::string ifname);
+        virtual ~LoopbackInterface();
+
+} __attribute__((aligned(8)));

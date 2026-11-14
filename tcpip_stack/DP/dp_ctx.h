@@ -2,9 +2,11 @@
 #define __DP_CTX_H__
 
 #include <cstdint>
+#include "Interface/intf_const.h"
 
 typedef struct ll_event_dispatcher_ ll_event_dispatcher_t;
 typedef struct ll_pkt_q_ ll_pkt_q_t;
+typedef struct dp_intf_ dp_intf_t;
 
 typedef struct dp_ctx_ {
 
@@ -19,6 +21,8 @@ typedef struct dp_ctx_ {
     
     /* Work Queues to recv Data from CP */
     ll_pkt_q_t *cp2dp_wq;
+
+    dp_intf_t *intf_table[DP_MAX_INTF];
 
 } dp_ctx_t;
 

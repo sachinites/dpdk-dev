@@ -2,6 +2,7 @@
 #include "../../MgmtPlane/CLIBuilder/cmdtlv.h"
 #include "../cp_ctx.h"
 #include "Interface.h"
+#include "InterfaceApi.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -11,6 +12,7 @@ extern int cprintf (const char* format, ...) ;
 extern cp_ctx_t cp_ctx;
 
 #define CMDCODE_SHOW_INT_BRIEF 1
+#define CMDCODE_CONFIG_INTF_LOOPBACK 2
 
 static void
 format_mac_addr(const uint8_t *mac, char *buf, size_t bufsz)
@@ -75,6 +77,63 @@ Mount_interface_show_cli(param_t *show) {
         init_param(&brief, CMD, "brief", show_interface_brief_handler, 0, INVALID, 0, "Show Interface brief");
         libcli_register_param(&interface, &brief);
         libcli_set_param_cmd_code(&brief, CMDCODE_SHOW_INT_BRIEF);
+    }
+}
+
+static int
+config_interface_loopback_handler(int64_t cmdcode,
+                                  Stack_t *tlv_stack,
+                                  op_mode enable_or_disable)
+{
+    (void)cmdcode;
+
+    const char *if_name = nullptr;
+    tlv_struct_t *tlv = nullptr;
+
+    TLV_LOOP_STACK_BEGIN(tlv_stack, tlv) {
+        if (parser_match_leaf_id(tlv->leaf_id, "if-name")) {
+            if_name = (const char *)tlv->value;
+        }
+    } TLV_LOOP_END;
+
+    if (!if_name || if_name[0] == '\0') {
+        cprintf("Error: interface name required\n");
+        return -1;
+    }
+
+    if (enable_or_disable == CONFIG_ENABLE) {
+        return create_loopback_interface(if_name);
+    }
+
+    if (enable_or_disable == CONFIG_DISABLE) {
+        return delete_loopback_interface(if_name);
+    }
+
+    return 0;
+}
+
+void
+Mount_interface_config_cli(param_t *config)
+{
+    /* config interface ... */
+    static param_t interface;
+    init_param(&interface, CMD, "interface", 0, 0, INVALID, 0,
+               "Configure Interface");
+    libcli_register_param(config, &interface);
+    {
+        /* config interface loopback ... */
+        static param_t loopback;
+        init_param(&loopback, CMD, "loopback", 0, 0, INVALID, 0,
+                   "Configure Loopback Interface");
+        libcli_register_param(&interface, &loopback);
+        {
+            /* config interface loopback <if-name> */
+            static param_t if_name;
+            init_param(&if_name, LEAF, 0, config_interface_loopback_handler, 0,
+                       STRING, "if-name", "Loopback interface name");
+            libcli_register_param(&loopback, &if_name);
+            libcli_set_param_cmd_code(&if_name, CMDCODE_CONFIG_INTF_LOOPBACK);
+        }
     }
 }
 

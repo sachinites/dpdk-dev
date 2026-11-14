@@ -6,7 +6,8 @@ CFLAGS  := -O2 -Wall -Wextra -I. -Igluethread -Istack -IEventDispatcher
 SRCS    := std_lib_init.cpp \
            gluethread/glthread.cpp \
            stack/stack.cpp \
-	   EventDispatcher/LockLessEvDis.cpp
+	   EventDispatcher/LockLessEvDis.cpp \
+	   BitOp/bitmap.cpp
 
 OBJS    := $(SRCS:.cpp=.o)
 

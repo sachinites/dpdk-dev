@@ -1,6 +1,6 @@
 APP     := tcpstack.exe
-SRC     := main.cpp
-OBJ     := main.o
+SRC     := main.cpp dpal/cp2dp.cpp
+OBJ     := main.o dpal/cp2dp.o
 
 CP_DIR  := CP
 DP_DIR  := DP

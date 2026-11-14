@@ -1,8 +1,10 @@
 #ifndef __INTF_CONST_H__
 #define __INTF_CONST_H__
 
+#include "../../tcpconst.h"
 
-#define DP_INTF_NAME    128
+#define DP_INTF_NAME    IF_NAME_SIZE
+#define DP_MAX_INTF     (MAX_INTF_INDEX + 1)
 
 /* Sequence must match exactly with control plane Enum */
 enum DP_InterfaceType_t {

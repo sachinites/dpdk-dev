@@ -3,7 +3,7 @@
 
 /* extern backend handlers here */
 extern void Mount_interface_show_cli(param_t *mount_point);
-
+extern void Mount_interface_config_cli(param_t *mount_point);
 
 void nw_init_cli() {
 
@@ -15,4 +15,5 @@ void nw_init_cli() {
 
     /* Implement your CLIs here */
     Mount_interface_show_cli(show);
+    Mount_interface_config_cli(config);
 }

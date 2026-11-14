@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <unordered_map>
 #include <string>
+#include "../libs/BitOp/bitmap.h"
 #include "Interface/InterfaceFwd.h"
 
 typedef struct ll_event_dispatcher_ ll_event_dispatcher_t;
@@ -24,6 +25,8 @@ typedef struct cp_ctx_ {
 
     /* CP Mgmt Event Loop (EventDispatcher )*/
     ll_event_dispatcher_t *cp_ev_dis;
+
+    alignas(8) bitmap_t if_index_bm;
 
 } cp_ctx_t;
 

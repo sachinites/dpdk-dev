@@ -1,7 +1,11 @@
 #include "Interface.h"
+#include "../cp_ctx.h"
+#include "../../libs/BitOp/bitmap.h"
 
 #include <cstdio>
 #include <cstring>
+
+extern cp_ctx_t cp_ctx;
 extern int cprintf (const char* format, ...) ;
 
 Interface::Interface(std::string if_name, InterfaceType_t iftype)
@@ -66,4 +70,25 @@ uint8_t *
 PhysicalInterface::GetMacAddr()
 {
     return mac_add;
+}
+
+LoopbackInterface::LoopbackInterface(std::string ifname)
+    : Interface(ifname, INTF_TYPE_LOOPBACK)
+{
+    this->if_name = std::move(ifname);
+    this->ifindex = UINT32_MAX; /* not allocated yet */
+    this->pkt_recv = 0;
+    this->pkt_sent = 0;
+    this->xmit_pkt_dropped = 0;
+    this->recvd_pkt_dropped = 0;
+    this->is_up = true;
+    this->iftype = INTF_TYPE_LOOPBACK;
+}
+
+LoopbackInterface::~LoopbackInterface()
+{
+    if (ifindex != UINT32_MAX) {
+        bitmap_unset_bit_at(&cp_ctx.if_index_bm, (uint16_t)ifindex);
+        ifindex = UINT32_MAX;
+    }
 }

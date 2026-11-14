@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <memory>
 
+#include "../libs/BitOp/bitmap.h"
 #include "cp_ctx.h"
 #include "Interface/Interface.h"
 #include "../dpal/cp2dp.h"
@@ -20,6 +21,7 @@ NICCreate (uint32_t ifindex, char *if_name, uint8_t *mac_addr) {
    /* name + INTF_TYPE_PHY via PhysicalInterface ctor; MAC copied in */
    auto phy_intf = std::make_shared<PhysicalInterface>(if_name, &mac);
    phy_intf->ifindex = ifindex;
+   bitmap_set_bit_at(&cp_ctx.if_index_bm, phy_intf->ifindex);
 
    (*cp_ctx.intf_by_name)[phy_intf->if_name] = phy_intf;
    (*cp_ctx.intf_by_ifindex)[ifindex] = phy_intf;
@@ -74,7 +76,7 @@ DPDK_LoadInterfaces() {
                 dev_info.max_rx_queues, dev_info.max_tx_queues,
                 port_numa_node);
 
-        NICCreate (port_id + 1, user_if_name, mac_addr.addr_bytes);
+        NICCreate (port_id, user_if_name, mac_addr.addr_bytes);
     }
 }
 
