@@ -1,6 +1,6 @@
 APP     := tcpstack.exe
-SRC     := main.cpp dpal/cp2dp.cpp
-OBJ     := main.o dpal/cp2dp.o
+SRC     := main.cpp dpal/cp2dp.cpp cli_thread_handoff.cpp
+OBJ     := main.o dpal/cp2dp.o cli_thread_handoff.o
 
 CP_DIR  := CP
 DP_DIR  := DP
@@ -16,7 +16,7 @@ CXX     := g++
 PKG_CONFIG ?= pkg-config
 DPDK_CFLAGS := $(shell $(PKG_CONFIG) --cflags libdpdk)
 DPDK_LIBS   := $(shell $(PKG_CONFIG) --libs libdpdk)
-CXXFLAGS := -O2 -Wall -Wextra -I$(CP_DIR) -I$(DP_DIR) -I$(CLI_DIR) -I$(LIBS_DIR) $(DPDK_CFLAGS)
+CXXFLAGS := -g -O2 -Wall -Wextra -I$(CP_DIR) -I$(DP_DIR) -I$(CLI_DIR) -I$(LIBS_DIR) $(DPDK_CFLAGS)
 
 .PHONY: all clean $(LIBCP) $(LIBDP) $(LIBCLI) $(LIBSTD)
 
@@ -47,3 +47,4 @@ clean:
 	$(MAKE) -C $(CLI_DIR) clean
 	$(MAKE) -C $(LIBS_DIR) clean
 	rm -f dpal/*.o
+	rm cli_thread_handoff.o

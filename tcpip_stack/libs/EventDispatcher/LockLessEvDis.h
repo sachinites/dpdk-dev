@@ -36,11 +36,19 @@ struct rte_ring;
  * One element stored (by value) inside a pkt_q's rte_ring.
  * rte_ring element size must be a multiple of 4 bytes: this is 16.
  */
+typedef struct ll_pkt_sync_wait_ {
+
+    pthread_mutex_t mtx;
+    pthread_cond_t cond;
+    bool done;
+
+} ll_pkt_sync_wait_t;
+
 typedef struct ll_pkt_elem_ {
 
     char *pkt;
     uint32_t pkt_size;
-    uint32_t pad;
+    ll_pkt_sync_wait_t *sync_wait; /* non-NULL: producer blocks until cbk finishes */
 } ll_pkt_elem_t;
 
 /*
@@ -101,6 +109,7 @@ struct ll_event_dispatcher_ {
     bool cbk_has_primed_pkt;
     ll_pkt_elem_t cbk_primed_pkt;
     std::vector<char *> cbk_handoffs;
+    std::vector<ll_pkt_sync_wait_t *> cbk_sync_waits;
 
     void *app_data;
 };

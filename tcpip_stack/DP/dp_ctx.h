@@ -24,6 +24,9 @@ typedef struct dp_ctx_ {
 
     dp_intf_t *intf_table[DP_MAX_INTF];
 
+    /* Critical Priority Work Queue : Accept show work from CLI thread */
+    ll_pkt_q_t *show_cli_wq;
+
 } dp_ctx_t;
 
 void 

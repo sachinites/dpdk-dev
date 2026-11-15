@@ -11,7 +11,7 @@ OBJ     := $(SRC:.cpp=.o)
 CXX     := g++
 PKG_CONFIG ?= pkg-config
 DPDK_CFLAGS := $(shell $(PKG_CONFIG) --cflags libdpdk)
-CXXFLAGS := -O2 -Wall -Wextra $(DPDK_CFLAGS)
+CXXFLAGS := -g -O2 -Wall -Wextra $(DPDK_CFLAGS)
 
 AR      := ar
 ARFLAGS := rcs

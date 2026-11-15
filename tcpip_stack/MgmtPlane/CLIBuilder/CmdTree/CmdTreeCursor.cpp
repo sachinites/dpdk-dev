@@ -1549,7 +1549,7 @@ cmdtc_set_filter_context (cmd_tree_cursor_t *cmdtc) {
 
 
 #define SCHED_SUBMISSION
-#undef SCHED_SUBMISSION
+//#undef SCHED_SUBMISSION
 
 #ifdef SCHED_SUBMISSION
 extern void

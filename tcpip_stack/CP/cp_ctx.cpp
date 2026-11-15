@@ -4,6 +4,9 @@
 #include "../tcpconst.h"
 #include "../libs/EventDispatcher/PubLockLessEvDis.h"
 
+extern void cli_wq_cbk(ll_event_dispatcher_t *ev_dis, void *arg, uint32_t size);
+extern void unified_cli_data_free(void *arg);
+
 void 
 init_cp_ctx(cp_ctx_t *cp_ctx, const char *dev_name)
 {
@@ -16,6 +19,16 @@ init_cp_ctx(cp_ctx_t *cp_ctx, const char *dev_name)
     cp_ctx->intf_by_ifindex = new std::unordered_map<uint32_t, InterfaceP>();
 
     cp_ctx->cp_ev_dis = ll_event_dispatcher_create("CP_EV_DIS", 0);
+
+    /* Register all work-queues with the event dispatcher */
+    cp_ctx->show_cli_wq = ll_pkt_q_create(cp_ctx->cp_ev_dis, 
+                        cli_wq_cbk, LL_TASK_PRIORITY_OPERATIONAL_CLI,
+                        unified_cli_data_free);
+
+    cp_ctx->config_cli_wq = ll_pkt_q_create(cp_ctx->cp_ev_dis, 
+                        cli_wq_cbk, LL_TASK_PRIORITY_CONFIG_CLI,
+                        unified_cli_data_free);
+
     ll_event_dispatcher_run(cp_ctx->cp_ev_dis);
 
     /* Should be integer multiple of 32*/

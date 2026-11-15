@@ -8,6 +8,7 @@
 #include "Interface/InterfaceFwd.h"
 
 typedef struct ll_event_dispatcher_ ll_event_dispatcher_t;
+typedef struct ll_pkt_q_ ll_pkt_q_t;
 
 typedef struct cp_ctx_ {
 
@@ -25,6 +26,12 @@ typedef struct cp_ctx_ {
 
     /* CP Mgmt Event Loop (EventDispatcher )*/
     ll_event_dispatcher_t *cp_ev_dis;
+
+    /* Critical Priority Work Queue : Accept show work from CLI thread */
+    ll_pkt_q_t *show_cli_wq;
+
+    /* Critical Priority Work Queue : Accept config work from CLI thread */
+    ll_pkt_q_t *config_cli_wq;
 
     alignas(8) bitmap_t if_index_bm;
 

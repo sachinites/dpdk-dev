@@ -13,6 +13,9 @@ extern int cprintf(const char *fmt, ...);
 extern void
 cp2dp_process_dp_msg(dp_msg_t *dp_msg);
 
+extern void cli_wq_cbk(ll_event_dispatcher_t *ev_dis, void *arg, uint32_t size);
+extern void unified_cli_data_free(void *arg);
+
 static void
 cp2dp_wq_cbk(ll_event_dispatcher_t *ev_dis, void *arg, uint32_t size)
 {
@@ -29,10 +32,16 @@ init_dp_ctx(dp_ctx_t *dp_ctx, const char *dev_name)
     dp_ctx->dev_name[sizeof(dp_ctx->dev_name) - 1] = '\0';
     dp_ctx->dev_id = 0;
     dp_ctx->dp_ev_dis = ll_event_dispatcher_create("DP_EV_DIS", 0);
+
+    /* Register all work-queues with the event dispatcher */
     dp_ctx->cp2dp_wq = ll_pkt_q_create(dp_ctx->dp_ev_dis,
                             cp2dp_wq_cbk,
                             LL_TASK_PRIORITY_CP_TO_DP,
                             NULL);
+
+    dp_ctx->show_cli_wq = ll_pkt_q_create(dp_ctx->dp_ev_dis, 
+        cli_wq_cbk, LL_TASK_PRIORITY_OPERATIONAL_CLI,
+        unified_cli_data_free);
 
     ll_event_dispatcher_run(dp_ctx->dp_ev_dis);
 }

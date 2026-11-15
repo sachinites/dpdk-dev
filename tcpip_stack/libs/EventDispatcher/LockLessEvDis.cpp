@@ -309,6 +309,17 @@ ll_eve_dis_process_pkt_q_post_call(ll_event_dispatcher_t *ev_dis, ll_pkt_q_t *pk
     }
 }
 
+static void
+ll_pkt_sync_wait_signal(ll_pkt_sync_wait_t *sync_wait) {
+
+    if (!sync_wait) return;
+
+    pthread_mutex_lock(&sync_wait->mtx);
+    sync_wait->done = true;
+    pthread_cond_signal(&sync_wait->cond);
+    pthread_mutex_unlock(&sync_wait->mtx);
+}
+
 /* ========================================================================== */
 /*                           pkt_q deletion support                           */
 /* ========================================================================== */
@@ -397,12 +408,17 @@ ll_event_dispatcher_thread(void *arg) {
         LL_TRACE("%s : invoking callback of pkt_q %p", ev_dis->name, (void *)pkt_q);
 
         ev_dis->cbk_handoffs.clear();
+        ev_dis->cbk_sync_waits.clear();
         ev_dis->cbk_has_primed_pkt = false;
 
         if (rte_ring_dequeue_elem(pkt_q->ring, &ev_dis->cbk_primed_pkt,
                                   sizeof(ev_dis->cbk_primed_pkt)) == 0) {
             pkt_q->deq_count++;
             ev_dis->cbk_has_primed_pkt = true;
+            if (ev_dis->cbk_primed_pkt.sync_wait) {
+                ev_dis->cbk_sync_waits.push_back(
+                    ev_dis->cbk_primed_pkt.sync_wait);
+            }
         }
 
         void *cbk_pkt = ev_dis->cbk_has_primed_pkt ?
@@ -414,6 +430,10 @@ ll_event_dispatcher_thread(void *arg) {
         ev_dis->n_task_exec++;
 
         ll_eve_dis_finish_callback_pkts(ev_dis, pkt_q);
+        for (ll_pkt_sync_wait_t *sw : ev_dis->cbk_sync_waits) {
+            ll_pkt_sync_wait_signal(sw);
+        }
+        ev_dis->cbk_sync_waits.clear();
 
         /* current_pkt_q is NULL if the callback de-initialized its own pkt_q;
          * the pkt_q memory may already be gone, so do not touch it. */
@@ -777,10 +797,10 @@ ll_pkt_q_enqueue(ll_event_dispatcher_t *ev_dis,
         return false;
     }
 
-    ll_pkt_elem_t elem = { pkt, pkt_size, 0 };
+    ll_pkt_elem_t elem = { pkt, pkt_size, NULL };
 
-    /* O(1), lock-free, multi-producer safe. The 16-byte element is copied
-     * into the ring by value: no malloc(). */
+    /* O(1), lock-free, multi-producer safe. Element copied into the ring by
+     * value: no malloc(). */
     if (rte_ring_enqueue_elem(pkt_q->ring, &elem, sizeof(elem)) != 0) {
         pkt_q->drop_count.fetch_add(1, std::memory_order_relaxed);
         pkt_q->n_inflight_producers.fetch_sub(1, std::memory_order_release);
@@ -792,6 +812,57 @@ ll_pkt_q_enqueue(ll_event_dispatcher_t *ev_dis,
     std::atomic_thread_fence(std::memory_order_seq_cst);
 
     ll_pkt_q_schedule(pkt_q->ev_dis, pkt_q);
+
+    pkt_q->n_inflight_producers.fetch_sub(1, std::memory_order_release);
+    return true;
+}
+
+bool
+ll_pkt_q_enqueue_sync(ll_event_dispatcher_t *ev_dis,
+                       ll_pkt_q_t *pkt_q,
+                       char *pkt, uint32_t pkt_size) {
+
+    ll_event_dispatcher_t *owner = pkt_q ? pkt_q->ev_dis : NULL;
+
+    (void)ev_dis;
+
+    if (!owner || !pkt_q->cbk) return false;
+
+    if (owner->thread_running &&
+        pthread_equal(pthread_self(), owner->thread)) {
+        return false;
+    }
+
+    ll_pkt_sync_wait_t sync_wait = {
+        PTHREAD_MUTEX_INITIALIZER,
+        PTHREAD_COND_INITIALIZER,
+        false
+    };
+
+    pkt_q->n_inflight_producers.fetch_add(1, std::memory_order_seq_cst);
+
+    if (!pkt_q->active.load(std::memory_order_seq_cst)) {
+        pkt_q->n_inflight_producers.fetch_sub(1, std::memory_order_release);
+        return false;
+    }
+
+    ll_pkt_elem_t elem = { pkt, pkt_size, &sync_wait };
+
+    if (rte_ring_enqueue_elem(pkt_q->ring, &elem, sizeof(elem)) != 0) {
+        pkt_q->drop_count.fetch_add(1, std::memory_order_relaxed);
+        pkt_q->n_inflight_producers.fetch_sub(1, std::memory_order_release);
+        return false;
+    }
+
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+
+    ll_pkt_q_schedule(pkt_q->ev_dis, pkt_q);
+
+    pthread_mutex_lock(&sync_wait.mtx);
+    while (!sync_wait.done) {
+        pthread_cond_wait(&sync_wait.cond, &sync_wait.mtx);
+    }
+    pthread_mutex_unlock(&sync_wait.mtx);
 
     pkt_q->n_inflight_producers.fetch_sub(1, std::memory_order_release);
     return true;
@@ -820,6 +891,9 @@ ll_task_get_next_pkt(ll_event_dispatcher_t *ev_dis, uint32_t *pkt_size) {
 
     pkt_q->deq_count++;
     ev_dis->cbk_handoffs.push_back(elem.pkt);
+    if (elem.sync_wait) {
+        ev_dis->cbk_sync_waits.push_back(elem.sync_wait);
+    }
     if (pkt_size) *pkt_size = elem.pkt_size;
     return elem.pkt;
 }

@@ -185,6 +185,22 @@ ll_pkt_q_enqueue(ll_event_dispatcher_t *ev_dis,
                  char *pkt, uint32_t pkt_size);
 
 /*
+ * PRODUCER API: like ll_pkt_q_enqueue(), but the caller blocks until the
+ * dispatcher has run this packet's callback and completed post-callback
+ * cleanup. When free_fn was passed to ll_pkt_q_create(), the library invokes
+ * it on this payload (and any others pulled in the same callback via
+ * ll_task_get_next_pkt()) before this call returns; the caller must not free
+ * pkt after success. Without free_fn, the callback owns freeing pkt.
+ * Returns false if the queue is full, destroyed, passive (no cbk), or if
+ * called from the dispatcher thread (would deadlock). Must not be used from
+ * inside a callback on the same dispatcher.
+ */
+bool
+ll_pkt_q_enqueue_sync(ll_event_dispatcher_t *ev_dis,
+                       ll_pkt_q_t *pkt_q,
+                       char *pkt, uint32_t pkt_size);
+
+/*
  * CONSUMER API: next packet of the pkt_q currently being served.
  * Call only from inside that pkt_q's callback (dispatcher thread).
  * The first successful call returns the same packet already passed as arg2 to
